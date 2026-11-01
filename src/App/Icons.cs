@@ -2,112 +2,152 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.Drawing.Text;
-using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace JVLinkServerTray
 {
-    // The tray icon: the app tile with a status badge at the bottom right (cut out of the tile).
-    // The four tray icons are drawn once at the system small-icon size and reused.
+    // The pictures: a horse-head silhouette (facing left), with a status badge at the bottom right for the
+    // tray. Pure drawing, no Windows state: TrayIcons picks the size and the fill, MakeIcon draws the EXE icon.
     public static class Icons
     {
-        static readonly Color TileColor = Color.FromArgb(0x2a, 0x6c, 0xc0);
+        static readonly Color ExeFill = FromRgb(IconLook.FillOnLightTaskbar);
         static readonly Color GreenBadge = Color.FromArgb(0x1f, 0x9e, 0x4a);
         static readonly Color YellowBadge = Color.FromArgb(0xe3, 0xa6, 0x00);
         static readonly Color RedBadge = Color.FromArgb(0xc4, 0x2b, 0x1c);
         static readonly Color GrayBadge = Color.FromArgb(0x6e, 0x6e, 0x73);
 
-        static Icon[] _icons;
-        static IntPtr[] _handles;
+        // The silhouette's bounding box in its 24 x 24 design box, and the eye.
+        const float Left = 2.4f, Right = 19.4f, Top = 5.5f, Bottom = 22f;
+        const float EyeX = 12.6f, EyeY = 10.4f, EyeR = 0.9f;
+        public const int EyeFromSize = 24;      // smaller icons have no eye
+        public const int OutlineFromSize = 32;  // the EXE icon's white outline
 
-        [DllImport("user32.dll", SetLastError = true)]
-        static extern bool DestroyIcon(IntPtr handle);
-
-        // UI thread only. Falls back to the stock application icon if drawing fails.
-        public static Icon For(TrayColor c)
+        public static Color Fill(bool lightTaskbar)
         {
-            try
-            {
-                if (_icons == null) Build();
-                return _icons[(int)c];
-            }
-            catch (Exception)
-            {
-                return SystemIcons.Application;
-            }
+            return FromRgb(IconLook.FillFor(lightTaskbar));
         }
 
-        public static void DisposeAll()
+        static Color FromRgb(int rgb)
         {
-            if (_icons == null) return;
-            for (int i = 0; i < _icons.Length; i++)
-            {
-                try { if (_icons[i] != null) _icons[i].Dispose(); } catch (Exception) { }
-                try { if (_handles[i] != IntPtr.Zero) DestroyIcon(_handles[i]); } catch (Exception) { }
-            }
-            _icons = null;
-            _handles = null;
+            return Color.FromArgb(255, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
         }
 
-        static void Build()
+        // The only glyph. The silhouette's bounding box fitted into box (aspect ratio kept), centred
+        // horizontally, standing on the box's bottom edge.
+        public static GraphicsPath HorsePath(RectangleF box)
         {
-            int size = SmallIconSize();
-            var icons = new Icon[4];
-            var handles = new IntPtr[4];
-            try
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    using (Bitmap b = Draw(size, (TrayColor)i))
-                    {
-                        handles[i] = b.GetHicon();
-                        icons[i] = Icon.FromHandle(handles[i]);   // does not own the handle: DestroyIcon in DisposeAll
-                    }
-                }
-            }
-            catch (Exception)
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    if (icons[i] != null) icons[i].Dispose();
-                    if (handles[i] != IntPtr.Zero) DestroyIcon(handles[i]);
-                }
-                throw;
-            }
-            _icons = icons;
-            _handles = handles;
+            var p = new GraphicsPath();
+            p.StartFigure();
+            p.AddLine(At(box, 7f, 22f), At(box, 19f, 22f));
+            p.AddBezier(At(box, 19f, 22f), At(box, 19.4f, 17.4f), At(box, 18.4f, 13.5f), At(box, 16f, 10.4f));
+            p.AddLine(At(box, 16f, 10.4f), At(box, 16.9f, 5.5f));
+            p.AddLine(At(box, 16.9f, 5.5f), At(box, 14.3f, 7.4f));
+            p.AddLine(At(box, 14.3f, 7.4f), At(box, 12.7f, 6.0f));
+            p.AddBezier(At(box, 12.7f, 6.0f), At(box, 9.2f, 7f), At(box, 6.4f, 9.6f), At(box, 4.6f, 12.8f));
+            p.AddLine(At(box, 4.6f, 12.8f), At(box, 3.2f, 14.3f));
+            p.AddBezier(At(box, 3.2f, 14.3f), At(box, 2.4f, 15.2f), At(box, 2.8f, 16.7f), At(box, 4.1f, 16.9f));
+            p.AddLine(At(box, 4.1f, 16.9f), At(box, 6.7f, 16.6f));
+            p.AddBezier(At(box, 6.7f, 16.6f), At(box, 7.7f, 16.5f), At(box, 8.6f, 17.2f), At(box, 8.3f, 18.2f));
+            p.CloseFigure();
+            return p;
         }
 
-        static int SmallIconSize()
+        public static PointF EyeCentre(RectangleF box)
         {
-            try
-            {
-                Size s = SystemInformation.SmallIconSize;
-                int n = Math.Max(s.Width, s.Height);
-                if (n >= 16 && n <= 256) return n;
-            }
-            catch (Exception)
-            {
-            }
-            return 16;
+            return At(box, EyeX, EyeY);
         }
 
-        // badge null: the tile alone, centred (the EXE icon). Otherwise the tray icon for that colour.
-        public static Bitmap Draw(int size, TrayColor? badge)
+        static float Scale(RectangleF box)
+        {
+            return Math.Min(box.Width / (Right - Left), box.Height / (Bottom - Top));
+        }
+
+        // A point of the 24 x 24 design box, in the icon.
+        static PointF At(RectangleF box, float x, float y)
+        {
+            float s = Scale(box);
+            float left = box.X + (box.Width - (Right - Left) * s) / 2f;
+            return new PointF(left + (x - Left) * s, box.Bottom - (Bottom - y) * s);
+        }
+
+        // The tray icon's glyph box: about a pixel of margin per 16 px, on whole pixels.
+        public static RectangleF GlyphBox(int size)
+        {
+            return Box(size, Margin(size));
+        }
+
+        // The EXE icon's: room for the outline as well.
+        public static RectangleF ExeGlyphBox(int size)
+        {
+            float outline = Outline(size);
+            int m = Margin(size);
+            if (outline > 0) m = Math.Max(m, (int)Math.Ceiling(outline) + 1);
+            return Box(size, m);
+        }
+
+        static int Margin(int size)
+        {
+            return Math.Max(1, (int)Math.Round(size / 16.0, MidpointRounding.AwayFromZero));
+        }
+
+        static float Outline(int size)
+        {
+            return size >= OutlineFromSize ? size / 24f : 0f;
+        }
+
+        static RectangleF Box(int size, int margin)
+        {
+            return new RectangleF(margin, margin, size - 2 * margin, size - 2 * margin);
+        }
+
+        // The tray icon. badge null: the silhouette alone.
+        public static Bitmap Draw(int size, TrayColor? badge, Color fill)
         {
             var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-            float s = size;
-            float tile = s * 0.84f;
-            float off = badge.HasValue ? 0f : (s - tile) / 2f;
+            RectangleF box = GlyphBox(size);
             using (Graphics g = Graphics.FromImage(bmp))
+            using (GraphicsPath p = HorsePath(box))
+            using (var brush = new SolidBrush(fill))
             {
                 g.Clear(Color.Transparent);
                 Smooth(g);
-                DrawGlyph(g, new RectangleF(off, off, tile, tile), size);
+                g.FillPath(brush, p);
             }
+            if (size >= EyeFromSize) CutEye(bmp, box);
             if (badge.HasValue) DrawBadge(bmp, badge.Value);
             return bmp;
+        }
+
+        // The EXE icon: the navy silhouette with a thin white outline from 32 px, so it reads on a dark
+        // Explorer background too. No badge.
+        public static Bitmap DrawExe(int size)
+        {
+            var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+            RectangleF box = ExeGlyphBox(size);
+            float outline = Outline(size);
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (GraphicsPath p = HorsePath(box))
+            using (var brush = new SolidBrush(ExeFill))
+            {
+                g.Clear(Color.Transparent);
+                Smooth(g);
+                if (outline > 0)
+                {
+                    using (var pen = new Pen(Color.White, outline * 2f))   // half of it is covered by the fill
+                    {
+                        pen.LineJoin = LineJoin.Round;
+                        g.DrawPath(pen, p);
+                    }
+                }
+                g.FillPath(brush, p);
+            }
+            if (size >= EyeFromSize) CutEye(bmp, box);
+            return bmp;
+        }
+
+        static void CutEye(Bitmap bmp, RectangleF box)
+        {
+            PointF c = EyeCentre(box);
+            CutCircle(bmp, c.X, c.Y, EyeR * Scale(box));
         }
 
         static void Smooth(Graphics g)
@@ -117,66 +157,8 @@ namespace JVLinkServerTray
             g.CompositingQuality = CompositingQuality.HighQuality;
         }
 
-        // The app glyph: a blue rounded tile with a white bold "JV". All glyph drawing lives here so a
-        // more detailed version for large sizes can replace it later; for now it is the same at every size.
-        static void DrawGlyph(Graphics g, RectangleF tile, int iconSize)
-        {
-            using (GraphicsPath p = RoundRect(tile, tile.Width * 0.22f))
-            using (var brush = new SolidBrush(TileColor))
-            {
-                g.FillPath(brush, p);
-            }
-
-            float em = tile.Width * 0.5f;
-            using (FontFamily family = TextFamily())
-            using (var font = new Font(family, em, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var white = new SolidBrush(Color.White))
-            using (var fmt = (StringFormat)StringFormat.GenericTypographic.Clone())
-            {
-                // Place by the letters' ink, not by font metrics: "J" then "V" with a small gap, the pair
-                // centred in the tile.
-                RectangleF j = InkBounds("J", family, em, fmt);
-                RectangleF v = InkBounds("V", family, em, fmt);
-                float gap = em * 0.05f;
-                float width = j.Width + gap + v.Width;
-                float top = Math.Min(j.Top, v.Top);
-                float height = Math.Max(j.Bottom, v.Bottom) - top;
-                float left = tile.X + (tile.Width - width) / 2f;
-                float y = tile.Y + (tile.Height - height) / 2f - top;
-                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                g.DrawString("J", font, white, left - j.Left, y, fmt);
-                g.DrawString("V", font, white, left + j.Width + gap - v.Left, y, fmt);
-            }
-        }
-
-        static FontFamily TextFamily()
-        {
-            foreach (string name in new[] { "Segoe UI", "Arial" })
-            {
-                try
-                {
-                    var f = new FontFamily(name);
-                    if (f.IsStyleAvailable(FontStyle.Bold)) return f;
-                    f.Dispose();
-                }
-                catch (ArgumentException)
-                {
-                }
-            }
-            return new FontFamily(GenericFontFamilies.SansSerif);
-        }
-
-        static RectangleF InkBounds(string text, FontFamily family, float em, StringFormat fmt)
-        {
-            using (var path = new GraphicsPath())
-            {
-                path.AddString(text, family, (int)FontStyle.Bold, em, PointF.Empty, fmt);
-                RectangleF b = path.GetBounds();
-                if (b.Width <= 0 || b.Height <= 0) return new RectangleF(0, 0, em * 0.5f, em * 0.7f);
-                return b;
-            }
-        }
-
+        // About half the icon, bottom right, with a transparent ring cut around it so the badge stands apart
+        // from the horse.
         static void DrawBadge(Bitmap bmp, TrayColor color)
         {
             float s = bmp.Width;
@@ -218,7 +200,7 @@ namespace JVLinkServerTray
             using (var b = new SolidBrush(c)) g.FillEllipse(b, box);
         }
 
-        // Clears a disc (anti-aliased edge) so whatever is behind the icon shows through around the badge.
+        // Clears a disc (anti-aliased edge) so whatever is behind the icon shows through.
         static void CutCircle(Bitmap bmp, float cx, float cy, float r)
         {
             int x0 = Math.Max(0, (int)Math.Floor(cx - r - 1)), y0 = Math.Max(0, (int)Math.Floor(cy - r - 1));
@@ -247,23 +229,6 @@ namespace JVLinkServerTray
             if (right <= left) right = left + 1;
             if (bottom <= top) bottom = top + 1;
             return RectangleF.FromLTRB(left, top, right, bottom);
-        }
-
-        static GraphicsPath RoundRect(RectangleF r, float radius)
-        {
-            var p = new GraphicsPath();
-            float dia = Math.Min(radius * 2f, Math.Min(r.Width, r.Height));
-            if (dia <= 0.01f)
-            {
-                p.AddRectangle(r);
-                return p;
-            }
-            p.AddArc(r.X, r.Y, dia, dia, 180, 90);
-            p.AddArc(r.Right - dia, r.Y, dia, dia, 270, 90);
-            p.AddArc(r.Right - dia, r.Bottom - dia, dia, dia, 0, 90);
-            p.AddArc(r.X, r.Bottom - dia, dia, dia, 90, 90);
-            p.CloseFigure();
-            return p;
         }
     }
 }

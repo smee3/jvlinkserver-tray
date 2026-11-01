@@ -74,6 +74,7 @@ namespace JVLinkServerTray
                 _view.Controllable = _sup.Controllable;
                 Apply(_view);
                 _icon.Visible = true;
+                _log.Write("アイコン: 描きました（" + TrayIcons.Describe() + "）");
 
                 try
                 {
@@ -81,6 +82,11 @@ namespace JVLinkServerTray
                     SystemEvents.SessionEnded += OnSessionEnded;
                 }
                 catch (Exception e) { _log.Write("起動: サインアウトの知らせを受け取れません（" + e.Message + "）"); }
+                try
+                {
+                    SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;   // the taskbar's light or dark theme
+                }
+                catch (Exception e) { _log.Write("起動: 画面の設定の知らせを受け取れません（" + e.Message + "）"); }
 
                 _timer = new System.Windows.Forms.Timer();
                 _timer.Interval = poll * 1000;
@@ -183,6 +189,7 @@ namespace JVLinkServerTray
         void OnTick(object sender, EventArgs e)
         {
             if (_ended) return;
+            RefreshIcons();   // also catches a change no event told about
             TimeSpan now = _clock.Elapsed;
             bool wasStalled = _gate.Stalled;
             Work running = _gate.Running;
@@ -218,7 +225,7 @@ namespace JVLinkServerTray
             try
             {
                 bool exiting = _gate.Exiting;
-                _icon.Icon = Icons.For(v.Color);
+                _icon.Icon = TrayIcons.For(v.Color);
                 _icon.Text = exiting ? TrayText.Tooltip(TrayColor.Gray, "終了しています") : TrayText.Tooltip(v.Color, v.Reason);
                 _statusItem.Text = MenuText(StatusText(v));
                 _restartsItem.Visible = v.RestartLine != null;
@@ -315,6 +322,28 @@ namespace JVLinkServerTray
             Begin(w);
         }
 
+        // Draws the icons again if the taskbar's theme or icon size changed.
+        void RefreshIcons()
+        {
+            if (_ended) return;
+            try
+            {
+                string line = TrayIcons.Refresh(_icon, _view.Color);
+                if (line != null) _log.Write(line);
+            }
+            catch (Exception e)
+            {
+                _log.Write("アイコン: 描き直せません（" + e.Message + "）");
+            }
+        }
+
+        void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            UserPreferenceCategory c = e.Category;
+            if (c == UserPreferenceCategory.General || c == UserPreferenceCategory.VisualStyle || c == UserPreferenceCategory.Color)
+                Post(RefreshIcons);
+        }
+
         // WM_QUERYENDSESSION: Windows asks; the sign-out or shutdown may still be cancelled. Stay, but hold
         // restarts off for a while (the server may be ended first). A cancelled one simply carries on.
         void OnSessionEnding(object sender, SessionEndingEventArgs e)
@@ -364,6 +393,7 @@ namespace JVLinkServerTray
             try { if (_timer != null) { _timer.Stop(); _timer.Dispose(); } } catch (Exception) { }
             try { SystemEvents.SessionEnding -= OnSessionEnding; } catch (Exception) { }
             try { SystemEvents.SessionEnded -= OnSessionEnded; } catch (Exception) { }
+            try { SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; } catch (Exception) { }
             try { if (_icon != null) { _icon.Visible = false; _icon.Dispose(); } } catch (Exception) { }
             try { if (_menu != null) _menu.Dispose(); } catch (Exception) { }
         }

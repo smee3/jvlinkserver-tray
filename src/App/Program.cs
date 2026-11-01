@@ -113,7 +113,7 @@ namespace JVLinkServerTray
                 {
                     try { app.Dispose(); } catch (Exception) { }   // takes the icon away even if Run threw
                 }
-                Icons.DisposeAll();
+                TrayIcons.DisposeAll();
                 try { mutex.ReleaseMutex(); } catch (Exception) { }
                 mutex.Dispose();   // the mutex stays referenced (held) until here
             }

@@ -16,7 +16,7 @@ if exist src\App\Program.cs (
   if errorlevel 1 exit /b 1
 )
 
-set TESTSRC=src\Core\*.cs tests\*.cs
+set TESTSRC=src\Core\*.cs src\App\Icons.cs tests\*.cs
 if exist src\Os set TESTSRC=%TESTSRC% src\Os\*.cs
 "%CSC%" %OPTS% /target:exe /out:bin\JVLinkServerTray.Tests.exe %TESTSRC%
 if errorlevel 1 exit /b 1

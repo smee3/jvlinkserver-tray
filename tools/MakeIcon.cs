@@ -1,22 +1,29 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.IO;
 
-// Build step (build.cmd): writes the EXE's icon -- the app tile from src\App\Icons.cs without a badge --
-// as an .ico with 16, 24, 32, 48 and 256 px images. Small images are 32-bit DIBs, 256 px is PNG.
+// Build step (build.cmd): writes the EXE's icon -- the horse from src\App\Icons.cs, without a badge -- as
+// an .ico with 16, 24, 32, 48 and 256 px images. Small images are 32-bit DIBs, 256 px is PNG.
+// MakeIcon --preview <dir> writes PNGs to look at instead: every tray icon and the EXE icon, alone and on
+// taskbar-like backgrounds.
 namespace JVLinkServerTray.Tools
 {
     public static class MakeIcon
     {
         static readonly int[] Sizes = { 16, 24, 32, 48, 256 };
+        static readonly int[] PreviewSizes = { 16, 20, 24, 32, 48 };
+        static readonly TrayColor[] Colors = { TrayColor.Green, TrayColor.Yellow, TrayColor.Red, TrayColor.Gray };
 
         public static int Main(string[] args)
         {
+            if (args.Length == 2 && args[0] == "--preview") return Preview(args[1]);
             if (args.Length != 1)
             {
-                Console.Error.WriteLine("usage: MakeIcon <out.ico>");
+                Console.Error.WriteLine("usage: MakeIcon <out.ico> | MakeIcon --preview <dir>");
                 return 2;
             }
             try
@@ -24,7 +31,7 @@ namespace JVLinkServerTray.Tools
                 var images = new List<byte[]>();
                 foreach (int size in Sizes)
                 {
-                    using (Bitmap b = Icons.Draw(size, null))
+                    using (Bitmap b = Icons.DrawExe(size))
                     {
                         images.Add(size >= 256 ? Png(b) : Dib(b));
                     }
@@ -37,6 +44,100 @@ namespace JVLinkServerTray.Tools
                 Console.Error.WriteLine("MakeIcon: " + e.Message);
                 return 1;
             }
+        }
+
+        static int Preview(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                foreach (bool light in new[] { true, false })
+                    foreach (TrayColor c in Colors)
+                        foreach (int size in PreviewSizes)
+                            using (Bitmap b = Icons.Draw(size, c, Icons.Fill(light)))
+                                b.Save(Path.Combine(dir, "tray-" + (light ? "light" : "dark") + "-" + c.ToString().ToLowerInvariant() + "-" + size + ".png"), ImageFormat.Png);
+                foreach (int size in PreviewSizes)
+                    using (Bitmap b = Icons.DrawExe(size))
+                        b.Save(Path.Combine(dir, "exe-" + size + ".png"), ImageFormat.Png);
+                using (Bitmap sheet = Sheet())
+                {
+                    sheet.Save(Path.Combine(dir, "sheet-1x.png"), ImageFormat.Png);
+                    using (Bitmap big = Enlarge(sheet, 4)) big.Save(Path.Combine(dir, "sheet-4x.png"), ImageFormat.Png);
+                }
+                return 0;
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine("MakeIcon: " + e.Message);
+                return 1;
+            }
+        }
+
+        // One row per picture, one column per size, each on the background it will sit on: the four tray
+        // icons on a light and on a dark taskbar, then the EXE icon on a white and on a dark Explorer window.
+        static Bitmap Sheet()
+        {
+            const int label = 132, cell = 56;
+            Color lightBar = Color.FromArgb(0xee, 0xee, 0xee), darkBar = Color.FromArgb(0x1c, 0x1c, 0x1c);
+            Color white = Color.White, darkWindow = Color.FromArgb(0x19, 0x19, 0x19);
+            var rows = new List<KeyValuePair<string, Func<int, Bitmap>>>();
+            var backs = new List<Color>();
+            foreach (bool light in new[] { true, false })
+            {
+                foreach (TrayColor c in Colors)
+                {
+                    bool l = light;
+                    TrayColor tc = c;
+                    rows.Add(new KeyValuePair<string, Func<int, Bitmap>>((light ? "明るい" : "暗い") + "タスクバー " + TrayText.ColorName(c),
+                        delegate(int size) { return Icons.Draw(size, tc, Icons.Fill(l)); }));
+                    backs.Add(light ? lightBar : darkBar);
+                }
+            }
+            rows.Add(new KeyValuePair<string, Func<int, Bitmap>>("EXE（白い背景）", Icons.DrawExe));
+            backs.Add(white);
+            rows.Add(new KeyValuePair<string, Func<int, Bitmap>>("EXE（暗い背景）", Icons.DrawExe));
+            backs.Add(darkWindow);
+
+            var sheet = new Bitmap(label + cell * PreviewSizes.Length, cell * (rows.Count + 1), PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(sheet))
+            using (var font = new Font("Yu Gothic UI", 9f, FontStyle.Regular, GraphicsUnit.Point))
+            {
+                g.Clear(white);
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                for (int i = 0; i < PreviewSizes.Length; i++)
+                    g.DrawString(PreviewSizes[i] + " px", font, Brushes.Black, label + i * cell + 8, cell / 2 - 8);
+                for (int r = 0; r < rows.Count; r++)
+                {
+                    int y = cell * (r + 1);
+                    using (var back = new SolidBrush(backs[r])) g.FillRectangle(back, label, y, cell * PreviewSizes.Length, cell);
+                    g.DrawString(rows[r].Key, font, Brushes.Black, 4, y + cell / 2 - 8);
+                    for (int i = 0; i < PreviewSizes.Length; i++)
+                    {
+                        int size = PreviewSizes[i];
+                        using (Bitmap b = rows[r].Value(size))
+                        {
+                            var at = new Rectangle(label + i * cell + (cell - size) / 2, y + (cell - size) / 2, size, size);
+                            g.DrawImage(b, at, 0, 0, size, size, GraphicsUnit.Pixel);   // 1:1, blended like the shell does
+                        }
+                    }
+                }
+            }
+            return sheet;
+        }
+
+        // Each pixel becomes a factor x factor block, to see the pixels on a high-DPI screen.
+        static Bitmap Enlarge(Bitmap b, int factor)
+        {
+            var big = new Bitmap(b.Width * factor, b.Height * factor, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(big))
+            {
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.DrawImage(b, new Rectangle(0, 0, big.Width, big.Height), new Rectangle(0, 0, b.Width, b.Height), GraphicsUnit.Pixel);
+            }
+            return big;
         }
 
         static byte[] Ico(List<byte[]> images)
