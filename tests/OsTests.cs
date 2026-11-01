@@ -10,7 +10,7 @@ using System.Threading;
 
 namespace JVLinkServerTray.Tests
 {
-    // These tests start bin\FakeJVLinkServer.exe on ports 18765-18773 only. They never touch the real server.
+    // These tests start bin\FakeJVLinkServer.exe on ports 18765-18774 and 18776 only. They never touch the real server.
     public static class OsTests
     {
         static string Fake()
@@ -228,6 +228,32 @@ namespace JVLinkServerTray.Tests
             Assert.True(sw.Elapsed.TotalSeconds >= 3 && sw.Elapsed.TotalSeconds < 10, "retried for a few seconds: " + sw.Elapsed.TotalSeconds + " s");
         }
 
+        // ---- the watched supervisor --------------------------------------------------------------
+
+        [Test] public static void Os_foundSupervisor_keepsItsHandle_exitCodeReadAfterItEnds() {
+            try {
+                var sp = new ServerProcess(Fake(), "--port 18774");
+                int pid;
+                using (Process started = sp.Start()) { pid = started.Id; }   // only FindSupervisor's handle is left
+                Assert.True(WaitFor(() => sp.FindAll().Count == 2, 5000), "two processes");
+                Process p = sp.FindSupervisor();
+                Assert.Equal(pid, p.Id, "found");
+                using (Process killer = Process.GetProcessById(pid)) { killer.Kill(); killer.WaitForExit(5000); }
+                Assert.True(p.WaitForExit(5000), "exit seen");
+                Assert.Equal(-1, p.ExitCode, "the exit code comes through the kept handle (not a reopened pid)");
+            } finally { Sweep(); }
+        }
+        [Test] public static void Os_serverOps_watchedAge_fromTheProcessStartTime() {
+            try {
+                var c = new TrayConfig(); c.ServerExe = Fake(); c.ServerArgs = "--port 18776";
+                var ops = new ServerOps(c, new TrayLog(TempDir()));
+                Assert.Null(ops.WatchedAge, "nothing watched");
+                Assert.True(ops.Start(), "started");
+                Thread.Sleep(1200);
+                TimeSpan? age = ops.WatchedAge;
+                Assert.True(age.HasValue && age.Value.TotalSeconds >= 1 && age.Value.TotalSeconds < 15, "age: " + age);
+            } finally { Sweep(); }
+        }
         [Test] public static void Os_health_hang_timesOut() {
             try {
                 new ServerProcess(Fake(), "--port 18769 --hang-health").Start();

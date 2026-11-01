@@ -95,9 +95,11 @@ namespace JVLinkServerTray
                 return 0;
             }
 
+            TrayApp app = null;
             try
             {
-                Application.Run(new TrayApp(config, path, error, log));
+                app = new TrayApp(config, path, error, log);
+                Application.Run(app);
                 return 0;
             }
             catch (Exception e)
@@ -107,6 +109,10 @@ namespace JVLinkServerTray
             }
             finally
             {
+                if (app != null)
+                {
+                    try { app.Dispose(); } catch (Exception) { }   // takes the icon away even if Run threw
+                }
                 Icons.DisposeAll();
                 try { mutex.ReleaseMutex(); } catch (Exception) { }
                 mutex.Dispose();   // the mutex stays referenced (held) until here

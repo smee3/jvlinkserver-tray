@@ -15,7 +15,6 @@ namespace JVLinkServerTray
     public sealed class TrayApp : ApplicationContext
     {
         const string Title = "JVLinkServer Tray";
-        const string ExitQuestion = "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
         const string StallReason = "トレイの作業が終わりません";
         static readonly TimeSpan SessionEndHold = TimeSpan.FromSeconds(60);
 
@@ -46,46 +45,60 @@ namespace JVLinkServerTray
             _gate = new WorkGate(_sup.Controllable, Supervisor.StallLimit(config));
             int poll = Supervisor.PollSeconds(config);
 
-            _invoker = new Control();
-            IntPtr unused = _invoker.Handle;    // create the window now, on the UI thread, for BeginInvoke
-
-            _statusItem = new MenuItem("状態: 確かめています");
-            _statusItem.Enabled = false;
-            _restartsItem = new MenuItem("");
-            _restartsItem.Enabled = false;
-            _restartsItem.Visible = false;
-            _openLogsItem = new MenuItem("ログのフォルダを開く", OnOpenLogs);
-            _rebuildItem = new MenuItem("サーバーを作り直す", OnRebuild);
-            _stopStartItem = new MenuItem("サーバーを止める", OnStopStart);
-            _exitItem = new MenuItem("終了…", OnExit);
-            _menu = new ContextMenu(new[]
-            {
-                _statusItem, _restartsItem, new MenuItem("-"), _openLogsItem, _rebuildItem, _stopStartItem,
-                new MenuItem("-"), _exitItem
-            });
-            _menu.Popup += OnMenuPopup;
-
-            _icon = new NotifyIcon();
-            _icon.ContextMenu = _menu;
-            _view = new TrayView();
-            _view.Color = TrayColor.Yellow;
-            _view.Reason = "起動しています";
-            _view.Controllable = _sup.Controllable;
-            Apply(_view);
-            _icon.Visible = true;
-
             try
             {
-                SystemEvents.SessionEnding += OnSessionEnding;
-                SystemEvents.SessionEnded += OnSessionEnded;
-            }
-            catch (Exception e) { _log.Write("起動: サインアウトの知らせを受け取れません（" + e.Message + "）"); }
+                _invoker = new Control();
+                IntPtr unused = _invoker.Handle;    // create the window now, on the UI thread, for BeginInvoke
 
-            _timer = new System.Windows.Forms.Timer();
-            _timer.Interval = poll * 1000;
-            _timer.Tick += OnTick;
-            Begin(_gate.Request(Work.Startup, _clock.Elapsed));
-            _timer.Start();
+                _statusItem = new MenuItem("状態: 確かめています");
+                _statusItem.Enabled = false;
+                _restartsItem = new MenuItem("");
+                _restartsItem.Enabled = false;
+                _restartsItem.Visible = false;
+                _openLogsItem = new MenuItem("ログのフォルダを開く", OnOpenLogs);
+                _rebuildItem = new MenuItem("サーバーを作り直す", OnRebuild);
+                _stopStartItem = new MenuItem("サーバーを止める", OnStopStart);
+                _exitItem = new MenuItem("終了…", OnExit);
+                _menu = new ContextMenu(new[]
+                {
+                    _statusItem, _restartsItem, new MenuItem("-"), _openLogsItem, _rebuildItem, _stopStartItem,
+                    new MenuItem("-"), _exitItem
+                });
+                _menu.Popup += OnMenuPopup;
+
+                _icon = new NotifyIcon();
+                _icon.ContextMenu = _menu;
+                _view = new TrayView();
+                _view.Color = TrayColor.Yellow;
+                _view.Reason = "起動しています";
+                _view.Controllable = _sup.Controllable;
+                Apply(_view);
+                _icon.Visible = true;
+
+                try
+                {
+                    SystemEvents.SessionEnding += OnSessionEnding;
+                    SystemEvents.SessionEnded += OnSessionEnded;
+                }
+                catch (Exception e) { _log.Write("起動: サインアウトの知らせを受け取れません（" + e.Message + "）"); }
+
+                _timer = new System.Windows.Forms.Timer();
+                _timer.Interval = poll * 1000;
+                _timer.Tick += OnTick;
+                Begin(_gate.Request(Work.Startup, _clock.Elapsed));
+                _timer.Start();
+            }
+            catch (Exception)
+            {
+                CleanUp();     // never leave an icon behind
+                throw;
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) CleanUp();
+            base.Dispose(disposing);
         }
 
         // ---- UI thread -------------------------------------------------------------------------
@@ -185,6 +198,7 @@ namespace JVLinkServerTray
                 v.Stopped = _view.Stopped;
                 v.Blocked = _view.Blocked;
                 v.Controllable = _view.Controllable;
+                v.Port = _view.Port;
                 v.StoppedAt = _view.StoppedAt;
                 v.RestartLine = _view.RestartLine;
                 _view = v;
@@ -224,8 +238,8 @@ namespace JVLinkServerTray
         string StatusText(TrayView v)
         {
             if (_gate.Exiting) return "状態: 終了しています（サーバーを止めています）";
-            TimeSpan greenFor = v.GreenSince.HasValue ? _clock.Elapsed - v.GreenSince.Value : TimeSpan.Zero;
-            return TrayText.StatusLine(v.Color, v.Reason, greenFor, v.StoppedAt);
+            TimeSpan runningFor = v.RunningSince.HasValue ? _clock.Elapsed - v.RunningSince.Value : TimeSpan.Zero;
+            return TrayText.StatusLine(v.Color, v.Reason, runningFor, v.StoppedAt, v.Port);
         }
 
         static string MenuText(string text)
@@ -277,8 +291,8 @@ namespace JVLinkServerTray
             _confirming = true;
             try
             {
-                answer = MessageBox.Show(ExitQuestion, Title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2);
+                answer = MessageBox.Show(TrayText.ExitQuestion(_sup.Controllable), Title, MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
             }
             catch (Exception ex)
             {
@@ -341,12 +355,17 @@ namespace JVLinkServerTray
             if (_ended) return;
             _ended = true;
             _gate.End();
-            try { _timer.Stop(); _timer.Dispose(); } catch (Exception) { }
+            CleanUp();
+            ExitThread();
+        }
+
+        void CleanUp()
+        {
+            try { if (_timer != null) { _timer.Stop(); _timer.Dispose(); } } catch (Exception) { }
             try { SystemEvents.SessionEnding -= OnSessionEnding; } catch (Exception) { }
             try { SystemEvents.SessionEnded -= OnSessionEnded; } catch (Exception) { }
-            try { _icon.Visible = false; _icon.Dispose(); } catch (Exception) { }
-            try { _menu.Dispose(); } catch (Exception) { }
-            ExitThread();
+            try { if (_icon != null) { _icon.Visible = false; _icon.Dispose(); } } catch (Exception) { }
+            try { if (_menu != null) _menu.Dispose(); } catch (Exception) { }
         }
     }
 }

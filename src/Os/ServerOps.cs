@@ -64,6 +64,17 @@ namespace JVLinkServerTray
             }
         }
 
+        // From the process's start time, read now (Process.StartTime is kept by the Process object).
+        public TimeSpan? WatchedAge
+        {
+            get
+            {
+                if (_watched == null) return null;
+                try { return DateTime.UtcNow - _watched.StartTime.ToUniversalTime(); }
+                catch (Exception) { return null; }
+            }
+        }
+
         void SetWatched(Process p)
         {
             if (_watched != null && _watched != p)

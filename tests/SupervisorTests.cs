@@ -14,7 +14,9 @@ namespace JVLinkServerTray.Tests
         public int Running;              // processes running ServerExe
         public int Unreadable;           // same-name processes whose path cannot be read
         public StopResult? StopAnswer;   // forces Stop's answer (Blocked: a refused kill)
+        public bool StopThrows;
         public bool Alive = true;        // the watched supervisor
+        public TimeSpan? Age;            // how long the watched supervisor has run
         public bool Watching;
         public int Starts, Stops, StartsWithoutCleanScan;
         bool _clean;                     // the last process-list look found nothing left
@@ -40,6 +42,7 @@ namespace JVLinkServerTray.Tests
         {
             Stops++;
             _clean = false;
+            if (StopThrows) throw new InvalidOperationException("boom");
             if (StopAnswer != null) return StopAnswer.Value;
             if (ListFails) return StopResult.Unknown;
             Running = 0;
@@ -64,9 +67,11 @@ namespace JVLinkServerTray.Tests
             Running = 2;
             Alive = true;
             Watching = true;
+            Age = TimeSpan.Zero;
             return true;
         }
         public string WatchedPid { get { return Watching ? "100" : "?"; } }
+        public TimeSpan? WatchedAge { get { return Watching ? Age : null; } }
     }
 
     sealed class FakeLog : ITrayLog
@@ -238,6 +243,66 @@ namespace JVLinkServerTray.Tests
             Assert.Equal(65.0, firstStop, "restarted at the first poll after the hold");
             Assert.Equal(1, r.Ops.Starts, "started");
             Assert.Equal(1, r.Sup.Snapshot().Color == TrayColor.Yellow ? 1 : 0, "starting");
+        }
+
+        // ---- small items -------------------------------------------------------------------
+
+        [Test] public static void Supervisor_startFromMenu_whenNotStoppedOrBlocked_doesNothing() {
+            var r = Rig.Adopted();
+            r.Sup.StartFromMenu();                                 // a second 起動する queued behind the first
+            Assert.Equal(0, r.Ops.Stops + r.Ops.Starts, "no second restart");
+            Assert.Equal(TrayColor.Green, r.View.Color, "still green");
+        }
+        [Test] public static void Supervisor_startFromMenu_fromGrayOrBlocked_restarts() {
+            var r = Rig.Adopted();
+            r.Sup.StopFromMenu(); Assert.True(r.View.Stopped, "gray");
+            r.Sup.StartFromMenu();
+            Assert.Equal(1, r.Ops.Starts, "started from gray");
+            var b = new Rig(); b.Ops.Unreadable = 1; b.Sup.Startup(); Assert.True(b.View.Blocked, "blocked");
+            b.Ops.Unreadable = 0; b.Sup.StartFromMenu();
+            Assert.Equal(1, b.Ops.Starts, "started from blocked");
+        }
+        [Test] public static void Supervisor_runningTime_isTheSupervisorsAge_andSurvivesBlips() {
+            var r = new Rig(); r.Ops.Running = 2; r.Ops.HealthNow = Ok(); r.Ops.Age = TimeSpan.FromHours(3);
+            r.Now = S(100); r.Sup.Startup();
+            TimeSpan since = S(100) - TimeSpan.FromHours(3);
+            Assert.Equal((TimeSpan?)since, r.View.RunningSince, "from the supervisor's start time");
+            r.Ops.HealthNow = Busy(); r.At(105); r.At(110);
+            r.Ops.HealthNow = Ok(); var v = r.At(115);
+            Assert.Equal(TrayColor.Green, v.Color, "green again"); Assert.Equal((TimeSpan?)since, v.RunningSince, "a 503 blip does not reset it");
+            r.Ops.Alive = false; r.Ops.HealthNow = Down();
+            r.At(120); r.At(130);                                  // restarted at 130
+            Assert.Equal(1, r.Ops.Starts, "restarted");
+            Assert.Equal((TimeSpan?)S(130), r.View.RunningSince, "a new server starts from zero");
+        }
+        [Test] public static void Supervisor_runningTime_httpOnly_fallsBackToTheStartOfWatching() {
+            var r = new Rig(); r.Ops.Running = 0; r.Ops.HealthNow = Ok();   // answers, no supervisor process found
+            r.Now = S(42); r.Sup.Startup();
+            Assert.Equal((TimeSpan?)S(42), r.View.RunningSince, "start of watching");
+        }
+        [Test] public static void Supervisor_cleansOldLogsWhenTheDateChanges() {
+            var r = Rig.Adopted();
+            Assert.Equal(1, r.Log.Cleanups, "at startup");
+            r.At(5); r.At(10);
+            Assert.Equal(1, r.Log.Cleanups, "same day");
+            r.At(15 * 3600);                                       // 09:00 + 15 h = next day
+            Assert.Equal(2, r.Log.Cleanups, "the date changed");
+            r.At(15 * 3600 + 5);
+            Assert.Equal(2, r.Log.Cleanups, "once per day");
+        }
+        [Test] public static void Supervisor_exit_finishesEvenWhenStopThrows() {
+            var r = Rig.Adopted(); r.Ops.StopThrows = true;
+            try { r.Sup.Exit(); } catch (InvalidOperationException) { }   // TrayApp logs it; WorkGate finishes anyway
+            Assert.True(r.Log.Count("終了: トレイを終わります") == 1, "the end is logged: " + r.Log.All());
+        }
+        [Test] public static void Supervisor_viewCarriesThePort() {
+            var r = Rig.Adopted();
+            Assert.Equal(8765, r.View.Port, "port");
+            var c = new Supervisor(null, new TrayConfig(), "設定ファイルが見つかりません（x）", "x", "y", new FakeLog(),
+                delegate { return TimeSpan.Zero; }, delegate { return DateTime.Now; });
+            c.Startup();
+            Assert.Equal(0, c.Snapshot().Port, "no port when the ini could not be read");
+            Assert.False(c.Snapshot().Controllable, "controls no server");
         }
     }
 }

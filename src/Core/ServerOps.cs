@@ -44,5 +44,8 @@ namespace JVLinkServerTray
 
         // The watched supervisor's pid for the record, "?" when none.
         string WatchedPid { get; }
+
+        // How long the watched supervisor has been running (from its start time); null when unknown or none.
+        TimeSpan? WatchedAge { get; }
     }
 }

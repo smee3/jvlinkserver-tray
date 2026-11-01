@@ -6,7 +6,7 @@ namespace JVLinkServerTray
 
     // The UI thread's bookkeeping for the work items. Pure: the caller passes the time and starts what it returns.
     // - One runs at a time. A user's request waits for the running one (the latest request wins); a tick never
-    //   queues a poll.
+    //   queues a poll; a Rebuild asked while a Rebuild runs is dropped (a double click).
     // - 終了 (Work.Exit) ends the menu work. Once the Exit item has returned (whatever happened in it), ShouldFinish.
     // - Stall guard: an item running longer than stallLimit is reported once (Stalled). From then on 終了 does not
     //   wait for it (ShouldFinish at once). If the item comes back after all, the tray carries on.
@@ -52,6 +52,7 @@ namespace JVLinkServerTray
             }
             if (_busy)
             {
+                if (w == Work.Rebuild && _running == Work.Rebuild) return null;
                 _pending = w;
                 return null;
             }

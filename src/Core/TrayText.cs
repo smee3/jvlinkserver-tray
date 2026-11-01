@@ -61,20 +61,38 @@ namespace JVLinkServerTray
             return (int)t.TotalDays + " 日 " + t.Hours + " 時間";
         }
 
-        // The first menu line. greenFor is used only for green, stoppedAt (wall clock) only for gray.
-        public static string StatusLine(TrayColor c, string reason, TimeSpan greenFor, DateTime stoppedAt)
+        // The first menu line: 「状態: 動いています（3 時間 12 分 · ポート 8765）」. runningFor (how long the server has
+        // run) is used only for green, stoppedAt (wall clock) only for gray. port <= 0: no port (the tray that
+        // could not read its ini controls no server).
+        public static string StatusLine(TrayColor c, string reason, TimeSpan runningFor, DateTime stoppedAt, int port)
         {
+            string head, detail = null;
             switch (c)
             {
                 case TrayColor.Green:
-                    return "状態: " + ColorWord(c) + "（" + Duration(greenFor) + "）";
+                    head = ColorWord(c);
+                    detail = Duration(runningFor);
+                    break;
                 case TrayColor.Yellow:
-                    return "状態: " + ColorWord(c);
+                    head = ColorWord(c);
+                    break;
                 case TrayColor.Red:
-                    if (!string.IsNullOrEmpty(reason) && reason.Length <= ShortReasonLimit) return "状態: " + reason;
-                    return "状態: " + ColorWord(c);
+                    head = !string.IsNullOrEmpty(reason) && reason.Length <= ShortReasonLimit ? reason : ColorWord(c);
+                    break;
+                default:
+                    head = ColorWord(c);
+                    detail = stoppedAt.ToString("HH:mm", CultureInfo.InvariantCulture) + " から";
+                    break;
             }
-            return "状態: " + ColorWord(c) + "（" + stoppedAt.ToString("HH:mm", CultureInfo.InvariantCulture) + " から）";
+            if (port > 0) detail = (detail == null ? "" : detail + " · ") + "ポート " + port;
+            return "状態: " + head + (detail == null ? "" : "（" + detail + "）");
+        }
+
+        // The question before 終了. The tray that controls no server only asks.
+        public static string ExitQuestion(bool controlsServer)
+        {
+            if (!controlsServer) return "終了しますか？";
+            return "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
         }
 
         // The second menu line, or null when /health gave no restart information.

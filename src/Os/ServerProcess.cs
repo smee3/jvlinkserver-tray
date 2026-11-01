@@ -363,12 +363,16 @@ namespace JVLinkServerTray
         }
 
         // Opens a pid from FindAll, guarding against pid reuse: the process name must still be ServerExe's.
+        // The handle is opened at once and kept, so HasExited and WaitForExit later ask this very process,
+        // not whatever reuses the pid after it ends (GetProcessById alone holds no handle).
         Process Open(int pid)
         {
             Process p = null;
             try
             {
                 p = Process.GetProcessById(pid);
+                try { GC.KeepAlive(p.SafeHandle); }
+                catch (Exception) { }   // no access: works as before, by pid
                 string expected = Path.GetFileNameWithoutExtension(_exePath);
                 if (string.Equals(p.ProcessName, expected, StringComparison.OrdinalIgnoreCase)) return p;
             }

@@ -17,6 +17,13 @@ namespace JVLinkServerTray.Tests
             Assert.Null(g.Done(S(9)), "nothing else queued");
             Assert.Equal((Work?)Work.Poll, g.Tick(S(10)), "poll when idle");
         }
+        [Test] public static void WorkGate_rebuildAskedWhileARebuildRuns_isDropped() {
+            var g = G();
+            Assert.Equal((Work?)Work.Rebuild, g.Request(Work.Rebuild, S(0)), "rebuild runs");
+            Assert.Null(g.Request(Work.Rebuild, S(1)), "double click");
+            Assert.Null(g.Done(S(30)), "no second rebuild");
+            Assert.Equal((Work?)Work.Poll, g.Tick(S(31)), "idle again");
+        }
         [Test] public static void WorkGate_stallGuard_tripsOnceAfterTheLimit() {
             var g = G();
             g.Request(Work.Poll, S(0));

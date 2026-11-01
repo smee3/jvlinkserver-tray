@@ -11,7 +11,8 @@ namespace JVLinkServerTray
         public bool Stopped;          // the user chose 止める (gray)
         public bool Blocked;          // red, no restarts until 起動する
         public bool Controllable;     // false when the ini could not be read
-        public TimeSpan? GreenSince;  // on the tray's clock
+        public TimeSpan? RunningSince;  // when the watched server started, on the tray's clock
+        public int Port;              // 0 when the ini could not be read
         public DateTime StoppedAt;
         public string RestartLine;
     }
@@ -38,16 +39,17 @@ namespace JVLinkServerTray
         readonly string _logDir;
         readonly ITrayLog _log;
         readonly Func<TimeSpan> _clock;    // monotonic (Stopwatch.Elapsed)
-        readonly Func<DateTime> _wall;     // only for the record and 「HH:mm から」
+        readonly Func<DateTime> _wall;     // only for the record, 「HH:mm から」 and the day of the cleanup
         readonly Watchdog _watchdog;
         readonly int _healthTimeoutMs;
         long _holdUntilTicks;              // on _clock; written by any thread (HoldRestarts)
 
         bool _stopped, _blocked, _unknown;
         DateTime _stoppedAt;
+        DateTime _cleanedOn;
         TrayColor? _lastColor;
         string _lastReason;
-        TimeSpan? _greenSince;
+        TimeSpan? _runningSince;
         HealthReport _lastHealth;
 
         // configError != null: the ini could not be read; ops is then ignored and no server is controlled.
@@ -92,8 +94,7 @@ namespace JVLinkServerTray
         {
             _log.Write("起動: JVLinkServer Tray " + TrayVersion.Value + " を起動しました（設定 " + _configPath
                 + (_configError == null ? "、ポート " + _config.Port : "") + "、記録 " + _logDir + "）");
-            int deleted = _log.Cleanup(_wall(), 14);
-            if (deleted > 0) _log.Write("起動: 14 日より古い記録を " + deleted + " 個消しました");
+            CleanOldLogs("起動");
             if (_configError != null)
             {
                 Block(_configError);
@@ -142,6 +143,7 @@ namespace JVLinkServerTray
 
         public void Poll()
         {
+            if (_wall().Date != _cleanedOn) CleanOldLogs("記録");
             Observe(true);
         }
 
@@ -153,9 +155,16 @@ namespace JVLinkServerTray
             Observe(false);
         }
 
-        // 起動する: also clears whatever is left (from a block or a stop) before starting.
+        // 起動する: also clears whatever is left (from a block or a stop) before starting. A second 起動する
+        // that waited behind the first finds the server neither stopped nor blocked and does nothing.
         public void StartFromMenu()
         {
+            if (!_stopped && !_blocked)
+            {
+                _log.Write("メニュー: 「サーバーを起動する」は見送ります（止めても、止まってもいません）");
+                Observe(false);
+                return;
+            }
             _log.Write("メニュー: サーバーを起動します");
             if (!_ops.ExeExists()) Block(MissingExe);
             else if (StopServer()) StartServer("メニューの「起動する」");
@@ -172,6 +181,7 @@ namespace JVLinkServerTray
             if (r == StopResult.Clean)
             {
                 _ops.Unwatch();
+                _runningSince = null;
             }
             else if (r == StopResult.Blocked)
             {
@@ -186,16 +196,22 @@ namespace JVLinkServerTray
 
         public void Exit()
         {
-            if (_ops != null)
+            try
             {
-                _log.Write("終了: メニューから。サーバーを止めてからトレイを終わります");
-                UserStop();
-                StopResult r = _ops.Stop(_config.ShutdownTimeoutSeconds);
-                if (r == StopResult.Clean) _ops.Unwatch();
-                else if (r == StopResult.Unknown) _log.Write("終了: " + NoList + "。止まったか確かめられません（そのまま終わります）");
-                else _log.Write("終了: " + CannotClean + "（そのまま終わります）");
+                if (_ops != null)
+                {
+                    _log.Write("終了: メニューから。サーバーを止めてからトレイを終わります");
+                    UserStop();
+                    StopResult r = _ops.Stop(_config.ShutdownTimeoutSeconds);
+                    if (r == StopResult.Clean) _ops.Unwatch();
+                    else if (r == StopResult.Unknown) _log.Write("終了: " + NoList + "。止まったか確かめられません（そのまま終わります）");
+                    else _log.Write("終了: " + CannotClean + "（そのまま終わります）");
+                }
             }
-            _log.Write("終了: トレイを終わります");
+            finally
+            {
+                _log.Write("終了: トレイを終わります");
+            }
         }
 
         public TrayView Snapshot()
@@ -206,7 +222,8 @@ namespace JVLinkServerTray
             v.Stopped = _stopped;
             v.Blocked = _blocked && !_stopped;
             v.Controllable = _ops != null;
-            v.GreenSince = _greenSince;
+            v.RunningSince = _runningSince;
+            v.Port = _ops != null ? _config.Port : 0;
             v.StoppedAt = _stoppedAt;
             v.RestartLine = TrayText.RestartLine(_lastHealth);
             return v;
@@ -235,7 +252,7 @@ namespace JVLinkServerTray
             _watchdog.HoldRestarts(new TimeSpan(Interlocked.Read(ref _holdUntilTicks)));
             Decision d = _watchdog.Step(alive, h, now);
             _lastHealth = h;
-            Note(d, now);
+            Note(d);
             if (allowRestart && d.Action == WatchAction.StopAndStart && _ops != null)
             {
                 _log.Write("起こし直し: " + d.Reason);
@@ -244,13 +261,12 @@ namespace JVLinkServerTray
             }
         }
 
-        void Note(Decision d, TimeSpan now)
+        void Note(Decision d)
         {
             if (_lastColor == null || _lastColor.Value != d.Color)
             {
                 _log.Write("色: " + (_lastColor == null ? "" : TrayText.ColorName(_lastColor.Value) + " → ")
                     + TrayText.ColorName(d.Color) + "（" + d.Reason + "）");
-                _greenSince = d.Color == TrayColor.Green ? (TimeSpan?)now : null;
             }
             _lastColor = d.Color;
             _lastReason = d.Reason;
@@ -263,6 +279,7 @@ namespace JVLinkServerTray
             if (r == StopResult.Clean)
             {
                 _ops.Unwatch();
+                _runningSince = null;
                 return true;
             }
             if (r == StopResult.Unknown) CouldNotTell("止まったか確かめられません");
@@ -341,6 +358,29 @@ namespace JVLinkServerTray
                 _log.Write("引き継ぎ直し: 見張り役（pid " + old + "）は終わりましたが /health が答えます。見張り役 pid " + _ops.WatchedPid + " を見張ります");
             else
                 _log.Write("引き継ぎ直し: 見張り役（pid " + old + "）は終わりましたが /health が答えます。見張り役が見つからないので、HTTP だけで見ます");
+            Watching();
+        }
+
+        // The menu's running time: from the watched supervisor's start time, read once and put on the clock
+        // (so a later clock change does not move it); without one, from now (the start of watching).
+        void Watching()
+        {
+            TimeSpan age = TimeSpan.Zero;
+            try
+            {
+                TimeSpan? a = _ops != null ? _ops.WatchedAge : null;
+                if (a.HasValue && a.Value > TimeSpan.Zero) age = a.Value;
+            }
+            catch (Exception) { }
+            _runningSince = _clock() - age;
+        }
+
+        void CleanOldLogs(string tag)
+        {
+            DateTime now = _wall();
+            _cleanedOn = now.Date;
+            int deleted = _log.Cleanup(now, 14);
+            if (deleted > 0) _log.Write(tag + ": 14 日より古い記録を " + deleted + " 個消しました");
         }
 
         // Could not tell whether a server is left: red, retried on the backoff schedule (Watchdog.Unknown).
@@ -369,6 +409,7 @@ namespace JVLinkServerTray
             _blocked = false;
             _stopped = false;
             _unknown = false;
+            Watching();
         }
 
         void UserStop()

@@ -46,14 +46,28 @@ namespace JVLinkServerTray.Tests
             Assert.Equal("2 日 4 時間", TrayText.Duration(new TimeSpan(2, 4, 30, 0)), "days");
             Assert.Equal("1 分未満", TrayText.Duration(TimeSpan.FromSeconds(-5)), "negative");
         }
-        [Test] public static void TrayText_statusLine_perColour() {
+        [Test] public static void TrayText_statusLine_perColour_withThePort() {
             DateTime at = new DateTime(2026, 11, 1, 9, 5, 0);
-            Assert.Equal("状態: 動いています（3 時間 12 分）", TrayText.StatusLine(TrayColor.Green, "正常に動いています", new TimeSpan(3, 12, 0), at), "green");
-            Assert.Equal("状態: 確かめています", TrayText.StatusLine(TrayColor.Yellow, "起動中です", TimeSpan.Zero, at), "yellow");
-            Assert.Equal("状態: 止めています（09:05 から）", TrayText.StatusLine(TrayColor.Gray, "停止中", TimeSpan.Zero, at), "gray");
-            Assert.Equal("状態: 片付けられないプロセスがあります", TrayText.StatusLine(TrayColor.Red, "片付けられないプロセスがあります", TimeSpan.Zero, at), "red short");
-            Assert.Equal("状態: 止まっています", TrayText.StatusLine(TrayColor.Red, new string('x', 41), TimeSpan.Zero, at), "red long");
-            Assert.Equal("状態: 止まっています", TrayText.StatusLine(TrayColor.Red, null, TimeSpan.Zero, at), "red none");
+            Assert.Equal("状態: 動いています（3 時間 12 分 · ポート 8765）", TrayText.StatusLine(TrayColor.Green, "正常に動いています", new TimeSpan(3, 12, 0), at, 8765), "green");
+            Assert.Equal("状態: 確かめています（ポート 8765）", TrayText.StatusLine(TrayColor.Yellow, "起動中です", TimeSpan.Zero, at, 8765), "yellow");
+            Assert.Equal("状態: 止めています（09:05 から · ポート 8765）", TrayText.StatusLine(TrayColor.Gray, "停止中", TimeSpan.Zero, at, 8765), "gray");
+            Assert.Equal("状態: 片付けられないプロセスがあります（ポート 8765）", TrayText.StatusLine(TrayColor.Red, "片付けられないプロセスがあります", TimeSpan.Zero, at, 8765), "red short");
+            Assert.Equal("状態: 止まっています（ポート 8765）", TrayText.StatusLine(TrayColor.Red, new string('x', 41), TimeSpan.Zero, at, 8765), "red long");
+            Assert.Equal("状態: 止まっています（ポート 8765）", TrayText.StatusLine(TrayColor.Red, null, TimeSpan.Zero, at, 8765), "red none");
+        }
+        [Test] public static void TrayText_statusLine_withoutAPort() {
+            // The tray that could not read its ini controls no server and names no port.
+            DateTime at = new DateTime(2026, 11, 1, 9, 5, 0);
+            Assert.Equal("状態: 動いています（3 時間 12 分）", TrayText.StatusLine(TrayColor.Green, "正常に動いています", new TimeSpan(3, 12, 0), at, 0), "green");
+            Assert.Equal("状態: 確かめています", TrayText.StatusLine(TrayColor.Yellow, "起動中です", TimeSpan.Zero, at, 0), "yellow");
+            Assert.Equal("状態: 止めています（09:05 から）", TrayText.StatusLine(TrayColor.Gray, "停止中", TimeSpan.Zero, at, 0), "gray");
+            Assert.Equal("状態: 設定ファイルが見つかりません（smoke.ini）", TrayText.StatusLine(TrayColor.Red, "設定ファイルが見つかりません（smoke.ini）", TimeSpan.Zero, at, 0), "red short");
+            Assert.Equal("状態: 止まっています", TrayText.StatusLine(TrayColor.Red, null, TimeSpan.Zero, at, 0), "red none");
+        }
+        [Test] public static void TrayText_exitQuestion() {
+            Assert.Equal("サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？",
+                TrayText.ExitQuestion(true), "controls the server");
+            Assert.Equal("終了しますか？", TrayText.ExitQuestion(false), "controls no server (ini not read)");
         }
         [Test] public static void TrayText_restartLine() {
             Assert.Null(TrayText.RestartLine(null), "no report");
