@@ -19,7 +19,6 @@ namespace JVLinkServerTray
         const float Left = 2.4f, Right = 19.4f, Top = 5.5f, Bottom = 22f;
         const float EyeX = 12.6f, EyeY = 10.4f, EyeR = 0.9f;
         public const int EyeFromSize = 24;      // smaller icons have no eye
-        public const int OutlineFromSize = 32;  // the EXE icon's white outline
 
         public static Color Fill(bool lightTaskbar)
         {
@@ -78,10 +77,7 @@ namespace JVLinkServerTray
         // The EXE icon's: room for the outline as well.
         public static RectangleF ExeGlyphBox(int size)
         {
-            float outline = Outline(size);
-            int m = Margin(size);
-            if (outline > 0) m = Math.Max(m, (int)Math.Ceiling(outline) + 1);
-            return Box(size, m);
+            return Box(size, Math.Max(Margin(size), (int)Math.Ceiling(Outline(size))));
         }
 
         static int Margin(int size)
@@ -89,9 +85,16 @@ namespace JVLinkServerTray
             return Math.Max(1, (int)Math.Round(size / 16.0, MidpointRounding.AwayFromZero));
         }
 
+        // The status badge: about 40 % of the icon, on whole pixels.
+        public static float BadgeDiameter(int size)
+        {
+            return Math.Max(4f, (float)Math.Round(size * 0.4, MidpointRounding.AwayFromZero));
+        }
+
+        // The EXE icon's white outline: 1 px up to 24 px, size / 24 above.
         static float Outline(int size)
         {
-            return size >= OutlineFromSize ? size / 24f : 0f;
+            return Math.Max(1f, size / 24f);
         }
 
         static RectangleF Box(int size, int margin)
@@ -117,8 +120,8 @@ namespace JVLinkServerTray
             return bmp;
         }
 
-        // The EXE icon: the navy silhouette with a thin white outline from 32 px, so it reads on a dark
-        // Explorer background too. No badge.
+        // The EXE icon: the navy silhouette with a thin white outline, so it reads on a dark Explorer
+        // background too. No badge.
         public static Bitmap DrawExe(int size)
         {
             var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
@@ -130,13 +133,10 @@ namespace JVLinkServerTray
             {
                 g.Clear(Color.Transparent);
                 Smooth(g);
-                if (outline > 0)
+                using (var pen = new Pen(Color.White, outline * 2f))   // half of it is covered by the fill
                 {
-                    using (var pen = new Pen(Color.White, outline * 2f))   // half of it is covered by the fill
-                    {
-                        pen.LineJoin = LineJoin.Round;
-                        g.DrawPath(pen, p);
-                    }
+                    pen.LineJoin = LineJoin.Round;
+                    g.DrawPath(pen, p);
                 }
                 g.FillPath(brush, p);
             }
@@ -157,12 +157,11 @@ namespace JVLinkServerTray
             g.CompositingQuality = CompositingQuality.HighQuality;
         }
 
-        // About half the icon, bottom right, with a transparent ring cut around it so the badge stands apart
-        // from the horse.
+        // Bottom right, with a transparent ring cut around it so the badge stands apart from the horse.
         static void DrawBadge(Bitmap bmp, TrayColor color)
         {
             float s = bmp.Width;
-            float d = s * 0.5f;
+            float d = BadgeDiameter(bmp.Width);
             float ring = Math.Max(1f, s / 16f);
             float cx = s - d / 2f, cy = s - d / 2f;
             CutCircle(bmp, cx, cy, d / 2f + ring);

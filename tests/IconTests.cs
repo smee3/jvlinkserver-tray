@@ -100,12 +100,21 @@ namespace JVLinkServerTray.Tests
             using (Bitmap b = Icons.DrawExe(16)) Assert.Equal(255, (int)b.GetPixel(exeEye.X, exeEye.Y).A, "EXE 16 px: no eye");
         }
 
+        [Test] public static void Icons_badge_isAbout40Percent() {
+            foreach (int size in TraySizes)
+            {
+                float d = Icons.BadgeDiameter(size);
+                Assert.True(d >= size * 0.36f && d <= size * 0.42f, size + " px: badge diameter " + d);
+                Assert.Equal((float)Math.Round(d), d, size + " px: whole pixels");
+            }
+        }
+
         // Pixels well inside the transparent ring between the badge and the horse: opaque without the badge,
         // fully transparent with it, for every colour.
         [Test] public static void Icons_badgeRing_isCutOut() {
             foreach (int size in new[] { 32, 48 })
             {
-                float d = size * 0.5f, ring = Math.Max(1f, size / 16f);
+                float d = Icons.BadgeDiameter(size), ring = Math.Max(1f, size / 16f);
                 float cx = size - d / 2f, cy = size - d / 2f;
                 var ringPixels = new System.Collections.Generic.List<Point>();
                 using (Bitmap plain = Icons.Draw(size, null, Icons.Fill(true)))
@@ -131,7 +140,7 @@ namespace JVLinkServerTray.Tests
             }
         }
 
-        [Test] public static void Icons_exe_whiteOutlineFrom32px_noBadge() {
+        [Test] public static void Icons_exe_whiteOutlineAtEverySize_noBadge() {
             foreach (int size in new[] { 16, 24, 32, 48, 256 })
             {
                 int white = 0, opaque = 0, coloured = 0;
@@ -142,16 +151,15 @@ namespace JVLinkServerTray.Tests
                         for (int x = 0; x < size; x++)
                         {
                             Color c = b.GetPixel(x, y);
+                            if (c.A >= 128 && c.R >= 200 && c.G >= 200 && c.B >= 200) white++;
                             if (c.A != 255) continue;
                             opaque++;
-                            if (c.R >= 250 && c.G >= 250 && c.B >= 250) white++;
                             int max = Math.Max(c.R, Math.Max(c.G, c.B)), min = Math.Min(c.R, Math.Min(c.G, c.B));
                             if (max - min > 80 || c.R > c.B + 8) coloured++;   // not navy, white or a blend of the two
                         }
                 }
                 Assert.True(opaque >= size * size / 4, size + " px: opaque " + opaque);
-                if (size >= 32) Assert.True(white >= size / 2, size + " px: a white outline (" + white + " white pixels)");
-                else Assert.Equal(0, white, size + " px: no outline");
+                Assert.True(white >= size / 2, size + " px: a white outline (" + white + " white pixels)");
                 Assert.Equal(0, coloured, size + " px: no badge colours");
             }
         }
