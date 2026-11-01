@@ -13,7 +13,7 @@ FILES="build.cmd src tests scripts"
 
 # The remote default shell may be cmd.exe or PowerShell, so every command goes through cmd /c.
 # Start from clean sources so deleted files do not linger remotely.
-$SSH "cmd /c \"if not exist $WDIR mkdir $WDIR & rmdir /s /q $WDIR\\src $WDIR\\tests 2>nul & exit /b 0\"" || exit 2
+$SSH "cmd /c \"mkdir $WDIR 2>nul & rmdir /s /q $WDIR\\src $WDIR\\tests $WDIR\\scripts 2>nul & exit /b 0\"" || exit 2
 # COPYFILE_DISABLE keeps macOS metadata (._ files) out of the archive.
 COPYFILE_DISABLE=1 tar -cf - $FILES | $SSH "cmd /c \"tar -xf - -C $WDIR\"" || exit 2
 FILTER=""
