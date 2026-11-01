@@ -51,9 +51,40 @@ namespace JVLinkServerTray
         // Throws when WMI itself fails.
         public List<ProcInfo> FindAll()
         {
+            var result = new List<ProcInfo>();
+            Scan(result, null);
+            return result;
+        }
+
+        // How many processes have ServerExe's file name but a path WMI cannot read (another user's or
+        // elevated). They are never killed, but they may hold the port. -1 when WMI fails. Never throws.
+        public int CountUnreadableSameName()
+        {
+            try
+            {
+                var unreadable = new List<int>();
+                Scan(new List<ProcInfo>(), unreadable);
+                return unreadable.Count;
+            }
+            catch (Exception)
+            {
+                return -1;
+            }
+        }
+
+        // The end of Stop: Clean only when nothing with ServerExe's path is left and no same-name process
+        // with an unreadable path exists. A negative count means "could not tell" and also blocks.
+        public static StopResult DecideStop(int readableLeft, int unreadableSameName)
+        {
+            return readableLeft == 0 && unreadableSameName == 0 ? StopResult.Clean : StopResult.Blocked;
+        }
+
+        // One WMI query by file name. Rows whose path equals ServerExe go to readable; rows whose path cannot
+        // be read or evaluated go to unreadable (may be null). Other paths are ignored. Throws when WMI fails.
+        void Scan(List<ProcInfo> readable, List<int> unreadable)
+        {
             string full = Path.GetFullPath(_exePath);
             string name = Path.GetFileName(full).Replace("\\", "\\\\").Replace("'", "\\'");
-            var result = new List<ProcInfo>();
             using (var searcher = new ManagementObjectSearcher(
                 "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name = '" + name + "'"))
             using (ManagementObjectCollection found = searcher.Get())
@@ -62,23 +93,30 @@ namespace JVLinkServerTray
                 {
                     using (mo)
                     {
+                        int pid;
+                        try { pid = Convert.ToInt32(mo["ProcessId"]); }
+                        catch (Exception) { continue; }
                         try
                         {
                             string path = mo["ExecutablePath"] as string;
-                            if (string.IsNullOrEmpty(path)) continue;
+                            if (string.IsNullOrEmpty(path))
+                            {
+                                if (unreadable != null) unreadable.Add(pid);
+                                continue;
+                            }
                             if (!string.Equals(Path.GetFullPath(path), full, StringComparison.OrdinalIgnoreCase)) continue;
                             var pi = new ProcInfo();
-                            pi.Pid = Convert.ToInt32(mo["ProcessId"]);
+                            pi.Pid = pid;
                             pi.CommandLine = mo["CommandLine"] as string;
-                            result.Add(pi);
+                            readable.Add(pi);
                         }
                         catch (Exception)
                         {
+                            if (unreadable != null) unreadable.Add(pid);
                         }
                     }
                 }
             }
-            return result;
         }
 
         // The supervisor (a ServerExe process that is not "--mode worker"), or null.
@@ -118,6 +156,7 @@ namespace JVLinkServerTray
 
             // 2. Wait for the supervisor (or, without a handle, for every ServerExe process) to end.
             List<ProcInfo> left;
+            List<int> unreadable;
             if (supervisor != null)
             {
                 string pid = PidText(supervisor);
@@ -132,24 +171,30 @@ namespace JVLinkServerTray
                 var sw = Stopwatch.StartNew();
                 while (true)
                 {
-                    if (TryFindAll(log, out left) && left.Count == 0) break;
+                    if (TryScan(log, out left, out unreadable) && left.Count == 0) break;
                     if (sw.Elapsed.TotalSeconds >= timeoutSeconds) break;
                     Thread.Sleep(1000);
                 }
             }
 
             // 3. Kill whatever is left (supervisors first, so none restarts a worker); 4. wait up to 5 s.
+            // Same-name processes with an unreadable path are never killed, but they keep the result Blocked.
             var tried = new HashSet<int>();
             var wait = Stopwatch.StartNew();
-            bool first = true;
+            bool first = true, warnedUnreadable = false, ok;
             while (true)
             {
-                bool ok = TryFindAll(log, out left);
-                if (ok && left.Count == 0)
+                ok = TryScan(log, out left, out unreadable);
+                if (DecideStop(ok ? left.Count : -1, ok ? unreadable.Count : -1) == StopResult.Clean)
                 {
                     if (first) Log(log, "停止 3/4: 残っているプロセスはありません");
                     Log(log, "停止 4/4: きれいに止まりました");
                     return StopResult.Clean;
+                }
+                if (ok && unreadable.Count > 0 && !warnedUnreadable)
+                {
+                    Log(log, "停止 3/4: 同じ名前でパスを読めないプロセスがあります（pid " + string.Join(", ", ToText(unreadable)) + "）。強制終了しません");
+                    warnedUnreadable = true;
                 }
                 if (ok)
                 {
@@ -173,23 +218,40 @@ namespace JVLinkServerTray
                 if (wait.ElapsedMilliseconds >= KillWaitMs) break;
                 Thread.Sleep(500);
             }
-            Log(log, "停止 4/4: 片付けられないプロセスがあります（pid " + (left == null ? "?" : PidList(left)) + "）");
+            Log(log, "停止 4/4: 片付けられないプロセスがあります（" + Describe(ok, left, unreadable) + "）");
             return StopResult.Blocked;
         }
 
-        bool TryFindAll(TrayLog log, out List<ProcInfo> list)
+        bool TryScan(TrayLog log, out List<ProcInfo> readable, out List<int> unreadable)
         {
+            readable = new List<ProcInfo>();
+            unreadable = new List<int>();
             try
             {
-                list = FindAll();
+                Scan(readable, unreadable);
                 return true;
             }
             catch (Exception e)
             {
                 Log(log, "停止: プロセスの一覧を取れません（" + e.Message + "）");
-                list = null;
                 return false;
             }
+        }
+
+        static string Describe(bool ok, List<ProcInfo> left, List<int> unreadable)
+        {
+            if (!ok) return "プロセスの一覧を取れません";
+            var parts = new List<string>();
+            if (left.Count > 0) parts.Add("pid " + PidList(left));
+            if (unreadable.Count > 0) parts.Add("パスを読めない pid " + string.Join(", ", ToText(unreadable)));
+            return string.Join("、", parts.ToArray());
+        }
+
+        static string[] ToText(List<int> pids)
+        {
+            var parts = new string[pids.Count];
+            for (int i = 0; i < pids.Count; i++) parts[i] = pids[i].ToString();
+            return parts;
         }
 
         void Kill(int pid, TrayLog log)
