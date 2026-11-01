@@ -7,7 +7,12 @@ cd /d "%~dp0"
 if not exist bin mkdir bin
 
 if exist src\App\Program.cs (
-  "%CSC%" %OPTS% /target:winexe /out:bin\JVLinkServerTray.exe /recurse:src\*.cs
+  rem The EXE icon is drawn by the same code as the tray icon, so no binary icon lives in the repository.
+  "%CSC%" %OPTS% /target:exe /out:bin\MakeIcon.exe tools\MakeIcon.cs src\App\Icons.cs src\Core\*.cs
+  if errorlevel 1 exit /b 1
+  bin\MakeIcon.exe bin\JVLinkServerTray.ico
+  if errorlevel 1 exit /b 1
+  "%CSC%" %OPTS% /target:winexe /win32icon:bin\JVLinkServerTray.ico /out:bin\JVLinkServerTray.exe /recurse:src\*.cs
   if errorlevel 1 exit /b 1
 )
 
