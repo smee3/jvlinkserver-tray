@@ -53,7 +53,7 @@ namespace JVLinkServerTray
 
         public void UserStopped() { _stopped = true; }
 
-        public void Blocked(string reason) { _blocked = reason ?? "起動できません"; }
+        public void Blocked(string reason) { _stopped = false; _blocked = reason ?? "起動できません"; }
 
         public Decision Step(bool processAlive, HealthReport health, TimeSpan now)
         {
@@ -78,12 +78,15 @@ namespace JVLinkServerTray
             if (health.Kind == HealthKind.Answered)
             {
                 _unreachableCount = 0;
+                _failureAt = null;
                 if (_yellowSince == null) _yellowSince = now;
                 if (!_escalationUsed && now - _yellowSince.Value >= YellowLimit)
                 {
                     _escalationUsed = true;
-                    return new Decision(TrayColor.Yellow, "10 分続けて正常ではありません（" + health.Status + "）。作り直します", WatchAction.StopAndStart);
+                    return new Decision(TrayColor.Yellow, "10 分以上戻りません（" + health.Status + "）。作り直します", WatchAction.StopAndStart);
                 }
+                if (_escalationUsed || now - _yellowSince.Value >= YellowLimit)
+                    return new Decision(TrayColor.Yellow, "10 分以上戻りません（" + health.Status + "）", WatchAction.None);
                 return new Decision(TrayColor.Yellow, "サーバーが応答しましたが正常ではありません（" + health.Status + "）", WatchAction.None);
             }
 

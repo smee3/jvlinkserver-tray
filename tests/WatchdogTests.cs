@@ -29,8 +29,10 @@ namespace JVLinkServerTray.Tests
     var w = W(); w.Step(true, Ok(), S(5)); w.Step(true, Busy(), S(10));
     var d = w.Step(true, Busy(), S(610));
     Assert.Equal(WatchAction.StopAndStart, d.Action, "escalate"); Assert.Equal(0, w.Attempt, "attempt untouched");
-    w.ServerStarted(S(615));
-    Assert.Equal(WatchAction.None, w.Step(true, Busy(), S(1300)).Action, "no second escalation");
+    w.ServerStarted(S(615)); w.Step(true, Busy(), S(620));
+    var late = w.Step(true, Busy(), S(1300));
+    Assert.Equal(WatchAction.None, late.Action, "no second escalation");
+    Assert.True(late.Reason.Contains("10 分以上戻りません") && late.Reason.Contains("starting"), "reason: " + late.Reason);
     w.Step(true, Ok(), S(1305)); w.Step(true, Busy(), S(1310));
     Assert.Equal(WatchAction.StopAndStart, w.Step(true, Busy(), S(1910)).Action, "again after green");
 }
@@ -96,5 +98,30 @@ namespace JVLinkServerTray.Tests
     Assert.True(d.Reason.Contains("見つかりません"), "reason");
     w.ServerStarted(S(1001)); Assert.Equal(TrayColor.Yellow, w.Step(true, Down(), S(1002)).Color, "grace again");
 }
+
+        [Test] public static void Watchdog_answerCancelsPendingFailure_alive() {
+            var w = W();
+            for (int i = 1; i <= 6; i++) w.Step(true, Down(), S(60 + 5 * i));   // 6th miss at 90 = failure
+            w.Step(true, Busy(), S(95));
+            for (int t = 100; t <= 120; t += 5) w.Step(true, Down(), S(t));
+            var d = w.Step(true, Down(), S(125));
+            Assert.Equal(TrayColor.Red, d.Color, "red"); Assert.Equal(WatchAction.None, d.Action, "fresh wait");
+            Assert.Equal(WatchAction.None, w.Step(true, Down(), S(134)).Action, "before 135");
+            Assert.Equal(WatchAction.StopAndStart, w.Step(true, Down(), S(135)).Action, "at 135");
+        }
+        [Test] public static void Watchdog_answerCancelsPendingFailure_deadHandle() {
+            var w = W(); w.Step(true, Ok(), S(5));
+            w.Step(false, Down(), S(10));
+            Assert.Equal(TrayColor.Yellow, w.Step(false, Busy(), S(15)).Color, "yellow");
+            var d = w.Step(false, Down(), S(20));
+            Assert.Equal(TrayColor.Red, d.Color, "red"); Assert.Equal(WatchAction.None, d.Action, "new failure waits");
+            Assert.Equal(WatchAction.StopAndStart, w.Step(false, Down(), S(30)).Action, "at 30");
+        }
+        [Test] public static void Watchdog_blockedAfterUserStopped_isRedWithReason() {
+            var w = W(); w.UserStopped(); w.Blocked("JVLinkServer.exe が見つかりません（ini の ServerExe）");
+            var d = w.Step(false, Down(), S(10));
+            Assert.Equal(TrayColor.Red, d.Color, "red"); Assert.Equal(WatchAction.None, d.Action, "none");
+            Assert.True(d.Reason.Contains("見つかりません"), "reason");
+        }
     }
 }
