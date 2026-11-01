@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -17,13 +16,10 @@ namespace JVLinkServerTray
     {
         const string IniName = "JVLinkServerTray.ini";
 
-        [DllImport("user32.dll")]
-        static extern bool SetProcessDPIAware();
-
+        // DPI awareness (per monitor) is declared in src\App\app.manifest, not set here.
         [STAThread]
         public static int Main(string[] args)
         {
-            try { SetProcessDPIAware(); } catch (Exception) { }
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

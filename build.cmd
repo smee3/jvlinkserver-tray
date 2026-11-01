@@ -12,7 +12,7 @@ if exist src\App\Program.cs (
   if errorlevel 1 exit /b 1
   bin\MakeIcon.exe bin\JVLinkServerTray.ico
   if errorlevel 1 exit /b 1
-  "%CSC%" %OPTS% /target:winexe /win32icon:bin\JVLinkServerTray.ico /out:bin\JVLinkServerTray.exe /recurse:src\*.cs
+  "%CSC%" %OPTS% /target:winexe /win32icon:bin\JVLinkServerTray.ico /win32manifest:src\App\app.manifest /out:bin\JVLinkServerTray.exe /recurse:src\*.cs
   if errorlevel 1 exit /b 1
 )
 

@@ -85,6 +85,7 @@ namespace JVLinkServerTray
                 try
                 {
                     SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;   // the taskbar's light or dark theme
+                    SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged; // the DPI (Remote Desktop can change it)
                 }
                 catch (Exception e) { _log.Write("起動: 画面の設定の知らせを受け取れません（" + e.Message + "）"); }
 
@@ -322,7 +323,7 @@ namespace JVLinkServerTray
             Begin(w);
         }
 
-        // Draws the icons again if the taskbar's theme or icon size changed.
+        // Draws the icons again if the taskbar's theme or DPI changed.
         void RefreshIcons()
         {
             if (_ended) return;
@@ -342,6 +343,11 @@ namespace JVLinkServerTray
             UserPreferenceCategory c = e.Category;
             if (c == UserPreferenceCategory.General || c == UserPreferenceCategory.VisualStyle || c == UserPreferenceCategory.Color)
                 Post(RefreshIcons);
+        }
+
+        void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            Post(RefreshIcons);
         }
 
         // WM_QUERYENDSESSION: Windows asks; the sign-out or shutdown may still be cancelled. Stay, but hold
@@ -394,6 +400,7 @@ namespace JVLinkServerTray
             try { SystemEvents.SessionEnding -= OnSessionEnding; } catch (Exception) { }
             try { SystemEvents.SessionEnded -= OnSessionEnded; } catch (Exception) { }
             try { SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; } catch (Exception) { }
+            try { SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged; } catch (Exception) { }
             try { if (_icon != null) { _icon.Visible = false; _icon.Dispose(); } } catch (Exception) { }
             try { if (_menu != null) _menu.Dispose(); } catch (Exception) { }
         }

@@ -35,6 +35,8 @@ $P_Restart = '起こし直し: '
 $P_Ending = '終了の知らせ: サインアウトが始まりました'
 $P_Ended = '終了: サインアウトです。アイコンを消して終わります'
 $P_Stop1 = '停止 1/4: '
+$P_Icon = 'アイコン: 描きました（'
+$P_IconAware = 'アイコン: 描きました（\d+ px、.+、PerMonitorV2）'
 
 $script:Failed = $false
 
@@ -203,11 +205,14 @@ try {
     $sups = @(Supervisors); $wks = @(Workers)
     $startLine = @(New-Lines 0 | Where-Object { $_ -match $P_Start }) | Select-Object -First 1
     $usesIni = [bool]$startLine -and $startLine.Contains($Ini)
+    $iconLine = @(New-Lines 0 | Where-Object { $_ -match $P_Icon }) | Select-Object -First 1
+    $iconOk = [bool]$iconLine -and $iconLine -match $P_IconAware   # the manifest made the tray per-monitor DPI aware
     $ok = [bool]$script:m1 -and $trays.Count -eq 1 -and $session -ne 0 -and $sups.Count -eq 1 -and $wks.Count -eq 1 -and
-        $sups[0].ParentProcessId -eq $tray1 -and $usesIni
+        $sups[0].ParentProcessId -eq $tray1 -and $usesIni -and $iconOk
     Step 1 $ok ("起動 and 緑 after $secs s; tray pid $tray1 in session $session; fakes: supervisor pid " +
         ($sups | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" }) + ", worker pid " + ($wks | ForEach-Object { $_.ProcessId }) +
-        "; ini from the log matches: $usesIni; windows: checked in the user's session after (4)")
+        "; ini from the log matches: $usesIni; icon per-monitor DPI aware: $iconOk (" + $(if ($iconLine) { $iconLine.Substring(20) } else { 'no icon line' }) +
+        "); windows: checked in the user's session after (4)")
     if (-not $ok) { throw 'step 1 failed' }
 
     # (2) kill the fake supervisor
