@@ -226,5 +226,18 @@ namespace JVLinkServerTray.Tests
             Assert.True(r.Log.Count("止まったか確かめられません") == 1, "could not tell, logged: " + r.Log.All());
             Assert.True(r.Log.Count("終了: トレイを終わります") == 1, "logged: " + r.Log.All());
         }
+
+        // ---- I-2: SessionEnding only holds restarts off for a while ------------------------------
+
+        [Test] public static void Supervisor_holdRestarts_postponesUntilTheDeadline_thenCarriesOn() {
+            var r = Rig.Adopted();
+            r.Sup.HoldRestarts(S(65));                             // SessionEnding at t = 5
+            r.Ops.Alive = false; r.Ops.HealthNow = Down();
+            double firstStop = -1;
+            for (int t = 10; t <= 300 && firstStop < 0; t += 5) { r.At(t); if (r.Ops.Stops > 0) firstStop = t; }
+            Assert.Equal(65.0, firstStop, "restarted at the first poll after the hold");
+            Assert.Equal(1, r.Ops.Starts, "started");
+            Assert.Equal(1, r.Sup.Snapshot().Color == TrayColor.Yellow ? 1 : 0, "starting");
+        }
     }
 }

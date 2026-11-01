@@ -4,6 +4,8 @@
 # The tray runs only with a test ini (bin\FakeJVLinkServer.exe on port 18775) through a temporary
 # scheduled task (Interactive). The script never starts, stops or kills anything else; the real server
 # is only read (GET /health) before and after. -CleanupOnly removes what an interrupted run left behind.
+# Step (8) plays a sign-out to the test tray only: WM_QUERYENDSESSION / WM_ENDSESSION sent to its own
+# .NET SystemEvents window (cancelled first, then for real).
 param([switch]$CleanupOnly)
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +32,9 @@ $P_Adopt = '引き継ぎ: '
 $P_Red = '色: \S+ → 赤'
 $P_Green = '色: (\S+ → )?緑'
 $P_Restart = '起こし直し: '
+$P_Ending = '終了の知らせ: サインアウトが始まりました'
+$P_Ended = '終了: サインアウトです。アイコンを消して終わります'
+$P_Stop1 = '停止 1/4: '
 
 $script:Failed = $false
 
@@ -309,6 +314,92 @@ foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='FakeJVLinkServer.e
         $result = if ($survived) { 'the fake server SURVIVED (supervisor ' + $sup6 + ', worker ' + $wk6 + ' still running; /health answers: ' + [bool](Get-Health $Port) + ')' }
                   else { 'the fake server was ENDED WITH THE TRAY (supervisors left ' + $sups.Count + ', workers left ' + $wks.Count + ')' }
         Step 6 $trayGone ("this tray (pid $tray2) restarted the server itself (supervisor $sup6); $jobs; Stop-ScheduledTask ended the tray: $trayGone; " + $result)
+    }
+
+    # (8) sign-out as Windows tells it, in the user's session: a probe starts a tray (it adopts the fakes left
+    # by (6)), sends WM_QUERYENDSESSION + WM_ENDSESSION(0) = cancelled (the tray must stay), then
+    # WM_QUERYENDSESSION + WM_ENDSESSION(1) = the session ends (the tray must go, the server must stay).
+    if (-not $own -or @(Supervisors).Count -ne 1) {
+        Step 8 $false 'skipped: no fake server left by (6)'
+    } else {
+        Wait-TaskIdle
+        $n = Log-Count
+        $sup8 = @(Supervisors)[0].ProcessId; $wk8 = @(Workers)[0].ProcessId
+        $endText = @'
+$out = '__OUT__'
+$lines = @()
+try {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class SmokeWin {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int n);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
+    // The .NET SystemEvents window of a process: it turns these messages into SessionEnding / SessionEnded.
+    public static IntPtr EventWindow(int pid) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            uint p;
+            GetWindowThreadProcessId(h, out p);
+            if (p != (uint)pid) return true;
+            var sb = new StringBuilder(256);
+            GetClassName(h, sb, sb.Capacity);
+            if (sb.ToString().StartsWith(".NET-BroadcastEventWindow", StringComparison.Ordinal)) { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static string Send(IntPtr h, uint msg, long w, long l) {
+        IntPtr r;
+        IntPtr ok = SendMessageTimeout(h, msg, new IntPtr(w), new IntPtr(l), 2, 5000, out r);
+        return ok == IntPtr.Zero ? "failed" : r.ToInt64().ToString();
+    }
+}
+"@
+    $logoff = 0x80000000L
+    $tray = Start-Process -FilePath '__TRAY__' -ArgumentList '--config "__INI__"' -WorkingDirectory '__BIN__' -PassThru
+    $h = [IntPtr]::Zero
+    for ($i = 0; $i -lt 80 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 250; $h = [SmokeWin]::EventWindow($tray.Id) }
+    $lines += "tray=$($tray.Id) window=$h"
+    Start-Sleep -Seconds 5
+    $lines += 'query=' + [SmokeWin]::Send($h, 0x11, 0, $logoff)
+    $lines += 'cancelled=' + [SmokeWin]::Send($h, 0x16, 0, $logoff)
+    Start-Sleep -Seconds 3
+    $tray.Refresh()
+    $lines += 'alive-after-cancel=' + (-not $tray.HasExited)
+    $lines += 'query2=' + [SmokeWin]::Send($h, 0x11, 0, $logoff)
+    $lines += 'ended=' + [SmokeWin]::Send($h, 0x16, 1, $logoff)
+    $lines += 'gone-after-end=' + $tray.WaitForExit(10000)
+} catch {
+    $lines += 'error=' + $_.Exception.Message
+}
+[IO.File]::WriteAllLines($out, $lines)
+'@
+        $EndProbe = Join-Path $Work 'end-probe.ps1'
+        $EndOut = Join-Path $Work 'end-probe.txt'
+        [IO.File]::WriteAllText($EndProbe, $endText.Replace('__OUT__', $EndOut).Replace('__TRAY__', $Tray).Replace('__INI__', $Ini).Replace('__BIN__', $Bin), $utf8)
+        Register-Smoke 'powershell.exe' ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $EndProbe + '"') $Work
+        Start-ScheduledTask -TaskName $TaskName
+        $got = Wait-Until { Test-Path -LiteralPath $EndOut } 60
+        Wait-TaskIdle
+        if (-not $got) {
+            Step 8 $false ('the probe did not run in the user''s session (' + (Task-Info) + ')')
+        } else {
+            Start-Sleep -Milliseconds 300
+            $probe = @(Get-Content -LiteralPath $EndOut)
+            $stayed = @($probe | Where-Object { $_ -eq 'alive-after-cancel=True' }).Count -eq 1
+            $went = @($probe | Where-Object { $_ -eq 'gone-after-end=True' }).Count -eq 1
+            $logged = (Has $n $P_Ending) -and (Has $n $P_Ended)
+            $noStop = -not (Has $n $P_Stop1)
+            $sups = @(Supervisors); $wks = @(Workers)
+            $kept = $sups.Count -eq 1 -and $wks.Count -eq 1 -and $sups[0].ProcessId -eq $sup8 -and $wks[0].ProcessId -eq $wk8 -and [bool](Get-Health $Port)
+            Step 8 ($stayed -and $went -and $logged -and $noStop -and $kept -and @(Trays).Count -eq 0) ("probe: " + ($probe -join '; ') +
+                "; logged SessionEnding and SessionEnded: $logged; did not stop the server: $noStop; fake supervisor $sup8 and worker $wk8 still running and answering: $kept")
+        }
     }
 } catch {
     Step 'x' $false ("aborted: " + $_.Exception.Message)

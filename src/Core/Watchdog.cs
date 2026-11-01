@@ -34,6 +34,7 @@ namespace JVLinkServerTray
         bool _stopped;
         string _blocked;
         string _unknown;
+        TimeSpan _holdUntil;
 
         public int Attempt { get; private set; }
 
@@ -68,6 +69,9 @@ namespace JVLinkServerTray
             _failureAt = now;
             _unreachableCount = 0;
         }
+
+        // No StopAndStart before until (Windows may be ending the session). Uses no attempt.
+        public void HoldRestarts(TimeSpan until) { _holdUntil = until; }
 
         public Decision Step(bool processAlive, HealthReport health, TimeSpan now)
         {
@@ -122,6 +126,8 @@ namespace JVLinkServerTray
         {
             if (_failureAt == null) _failureAt = now;
             TimeSpan due = _failureAt.Value + Backoff.Delay(Attempt);
+            if (now >= due && now < _holdUntil)
+                return new Decision(TrayColor.Red, reason + "。サインアウトか Windows の終了の途中なので待ちます", WatchAction.None);
             if (now >= due)
             {
                 Attempt++;

@@ -149,5 +149,16 @@ namespace JVLinkServerTray.Tests
             var d = b.Step(false, Down(), S(100));
             Assert.Equal("片付けられないプロセスがあります", d.Reason, "blocked"); Assert.Equal(WatchAction.None, d.Action, "none");
         }
+        [Test] public static void Watchdog_holdRestarts_postponesWithoutUsingAnAttempt() {
+            var w = W(); w.Step(true, Ok(), S(5));
+            w.HoldRestarts(S(70));
+            w.Step(false, Down(), S(10));
+            var a = w.Step(false, Down(), S(20));
+            Assert.Equal(WatchAction.None, a.Action, "held"); Assert.Equal(TrayColor.Red, a.Color, "red");
+            Assert.Equal(WatchAction.None, w.Step(false, Down(), S(69)).Action, "still held");
+            Assert.Equal(0, w.Attempt, "no attempt used");
+            Assert.Equal(WatchAction.StopAndStart, w.Step(false, Down(), S(70)).Action, "restart when the hold ends");
+            Assert.Equal(1, w.Attempt, "attempt");
+        }
     }
 }

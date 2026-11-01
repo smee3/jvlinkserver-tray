@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace JVLinkServerTray
 {
@@ -40,6 +41,7 @@ namespace JVLinkServerTray
         readonly Func<DateTime> _wall;     // only for the record and 「HH:mm から」
         readonly Watchdog _watchdog;
         readonly int _healthTimeoutMs;
+        long _holdUntilTicks;              // on _clock; written by any thread (HoldRestarts)
 
         bool _stopped, _blocked, _unknown;
         DateTime _stoppedAt;
@@ -79,6 +81,12 @@ namespace JVLinkServerTray
         }
 
         public bool Controllable { get { return _ops != null; } }
+
+        // No restart before until (on the clock). Any thread: SessionEnding calls it, the work item reads it.
+        public void HoldRestarts(TimeSpan until)
+        {
+            Interlocked.Exchange(ref _holdUntilTicks, until.Ticks);
+        }
 
         public void Startup()
         {
@@ -224,6 +232,7 @@ namespace JVLinkServerTray
                 alive = true;
             }
             TimeSpan now = _clock();
+            _watchdog.HoldRestarts(new TimeSpan(Interlocked.Read(ref _holdUntilTicks)));
             Decision d = _watchdog.Step(alive, h, now);
             _lastHealth = h;
             Note(d, now);

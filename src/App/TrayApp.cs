@@ -17,6 +17,7 @@ namespace JVLinkServerTray
         const string Title = "JVLinkServer Tray";
         const string ExitQuestion = "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
         const string StallReason = "トレイの作業が終わりません";
+        static readonly TimeSpan SessionEndHold = TimeSpan.FromSeconds(60);
 
         // Set once.
         readonly TrayLog _log;
@@ -73,7 +74,11 @@ namespace JVLinkServerTray
             Apply(_view);
             _icon.Visible = true;
 
-            try { SystemEvents.SessionEnding += OnSessionEnding; }
+            try
+            {
+                SystemEvents.SessionEnding += OnSessionEnding;
+                SystemEvents.SessionEnded += OnSessionEnded;
+            }
             catch (Exception e) { _log.Write("起動: サインアウトの知らせを受け取れません（" + e.Message + "）"); }
 
             _timer = new System.Windows.Forms.Timer();
@@ -296,7 +301,8 @@ namespace JVLinkServerTray
             Begin(w);
         }
 
-        // 4.8: sign-out or Windows shutting down. Leave the server alone; just take the icon away and go.
+        // WM_QUERYENDSESSION: Windows asks; the sign-out or shutdown may still be cancelled. Stay, but hold
+        // restarts off for a while (the server may be ended first). A cancelled one simply carries on.
         void OnSessionEnding(object sender, SessionEndingEventArgs e)
         {
             if (_invoker.InvokeRequired)
@@ -306,8 +312,28 @@ namespace JVLinkServerTray
                 return;
             }
             if (_ended) return;
-            _log.Write("終了: サインアウトか Windows の終了です。アイコンを消して終わります（サーバーは止めません）");
+            _log.Write("終了の知らせ: " + SessionWord(e.Reason) + "が始まりました。" + (int)SessionEndHold.TotalSeconds
+                + " 秒は起こし直しません（取りやめになれば、そのまま見張ります）");
+            _sup.HoldRestarts(_clock.Elapsed + SessionEndHold);
+        }
+
+        // 4.8, WM_ENDSESSION (wParam != 0): the session really ends. Leave the server alone; take the icon away and go.
+        void OnSessionEnded(object sender, SessionEndedEventArgs e)
+        {
+            if (_invoker.InvokeRequired)
+            {
+                try { _invoker.Invoke(new Action(delegate { OnSessionEnded(sender, e); })); }
+                catch (Exception) { }
+                return;
+            }
+            if (_ended) return;
+            _log.Write("終了: " + SessionWord(e.Reason) + "です。アイコンを消して終わります（サーバーは止めません）");
             Finish();
+        }
+
+        static string SessionWord(SessionEndReasons r)
+        {
+            return r == SessionEndReasons.Logoff ? "サインアウト" : "Windows の終了";
         }
 
         void Finish()
@@ -317,6 +343,7 @@ namespace JVLinkServerTray
             _gate.End();
             try { _timer.Stop(); _timer.Dispose(); } catch (Exception) { }
             try { SystemEvents.SessionEnding -= OnSessionEnding; } catch (Exception) { }
+            try { SystemEvents.SessionEnded -= OnSessionEnded; } catch (Exception) { }
             try { _icon.Visible = false; _icon.Dispose(); } catch (Exception) { }
             try { _menu.Dispose(); } catch (Exception) { }
             ExitThread();
