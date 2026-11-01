@@ -6,7 +6,7 @@ using System.Text;
 namespace JVLinkServerTray
 {
     // The tray's own record: <dir>\JVLinkServerTray_yyyyMMdd.log, one line per event. Never throws.
-    public sealed class TrayLog
+    public sealed class TrayLog : ITrayLog
     {
         const string Prefix = "JVLinkServerTray_";
         const string Suffix = ".log";

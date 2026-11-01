@@ -8,75 +8,39 @@ using Microsoft.Win32;
 namespace JVLinkServerTray
 {
     // The tray (design 4.3-4.9). Threading: the UI thread owns the icon, the menu, the timer and the
-    // busy flag. Everything that can block (HTTP, WMI, starting and stopping the server) runs as one
-    // work item at a time on the thread pool; only that work item touches the watch state below, and
-    // it hands an immutable View back to the UI thread.
+    // WorkGate. Everything that can block (HTTP, WMI, starting and stopping the server) is a Supervisor work
+    // item run one at a time on the thread pool; it hands an immutable TrayView back to the UI thread.
     public sealed class TrayApp : ApplicationContext
     {
         const string Title = "JVLinkServer Tray";
         const string ExitQuestion = "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
-        const string MissingExe = "JVLinkServer.exe が見つかりません（ini の ServerExe）";
-        const string CannotClean = "片付けられないプロセスがあります";
-        const string CannotCleanUnreadable = "片付けられないプロセスがあります（パスを読めない）";
-
-        sealed class View
-        {
-            public TrayColor Color;
-            public string Reason;
-            public bool Stopped;          // the user chose 止める (gray)
-            public bool Blocked;          // red, no restarts until 起動する
-            public bool Controllable;     // false when the ini could not be read
-            public TimeSpan? GreenSince;  // on _clock
-            public DateTime StoppedAt;
-            public string RestartLine;
-        }
 
         // Set once.
-        readonly TrayConfig _config;
-        readonly string _configPath;
-        readonly string _configError;
         readonly TrayLog _log;
-        readonly HealthClient _client;     // null when the ini could not be read
-        readonly ServerProcess _server;    // null when the ini could not be read
-        readonly Watchdog _watchdog;
+        readonly Supervisor _sup;
         readonly Stopwatch _clock;
-        readonly int _healthTimeoutMs;
 
         // UI thread only.
+        readonly WorkGate _gate;
         readonly Control _invoker;
         readonly NotifyIcon _icon;
         readonly ContextMenu _menu;
         readonly MenuItem _statusItem, _restartsItem, _openLogsItem, _rebuildItem, _stopStartItem, _exitItem;
         readonly System.Windows.Forms.Timer _timer;
-        bool _busy, _exiting, _confirming, _ended;
-        Action _pending;
-        View _view;
-
-        // The running work item only.
-        Process _watched;                  // the supervisor; null = watch by HTTP only
-        bool _stopped, _blocked;
-        DateTime _stoppedAt;
-        TrayColor? _lastColor;
-        string _lastReason;
-        TimeSpan? _greenSince;
-        HealthReport _lastHealth;
-        volatile bool _exitDone;
+        bool _confirming, _ended;
+        TrayView _view;
 
         public TrayApp(TrayConfig config, string configPath, string configError, TrayLog log)
         {
-            _configPath = configPath;
-            _configError = config == null && configError == null ? "設定を読めません" : configError;
-            _config = config ?? new TrayConfig();     // only for timings when the ini could not be read
+            if (config == null && configError == null) configError = "設定を読めません";
+            if (config == null) config = new TrayConfig();     // only for timings when the ini could not be read
             _log = log;
             _clock = Stopwatch.StartNew();
-            _watchdog = new Watchdog(_config);
-            if (_configError == null)
-            {
-                _client = new HealthClient(_config.Port);
-                _server = new ServerProcess(_config.ServerExe, _config.ServerArgs);
-            }
-            int poll = Math.Min(Math.Max(_config.PollSeconds, 1), 3600);
-            _healthTimeoutMs = Math.Min(3000, poll * 1000 - 500);
+            IServerOps ops = configError == null ? new ServerOps(config, log) : null;
+            _sup = new Supervisor(ops, config, configError, configPath, log.Dir, log,
+                delegate { return _clock.Elapsed; }, delegate { return DateTime.Now; });
+            _gate = new WorkGate(_sup.Controllable);
+            int poll = Supervisor.PollSeconds(config);
 
             _invoker = new Control();
             IntPtr unused = _invoker.Handle;    // create the window now, on the UI thread, for BeginInvoke
@@ -99,10 +63,10 @@ namespace JVLinkServerTray
 
             _icon = new NotifyIcon();
             _icon.ContextMenu = _menu;
-            _view = new View();
+            _view = new TrayView();
             _view.Color = TrayColor.Yellow;
             _view.Reason = "起動しています";
-            _view.Controllable = _server != null;
+            _view.Controllable = _sup.Controllable;
             Apply(_view);
             _icon.Visible = true;
 
@@ -112,39 +76,54 @@ namespace JVLinkServerTray
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = poll * 1000;
             _timer.Tick += OnTick;
-            Run(StartupWork);
+            Begin(_gate.Request(Work.Startup, _clock.Elapsed));
             _timer.Start();
         }
 
         // ---- UI thread -------------------------------------------------------------------------
 
-        void Run(Action work)
+        // Starts the work the gate handed out (null: nothing to start).
+        void Begin(Work? w)
         {
-            _busy = true;
+            if (w == null) return;
+            Action work = WorkFor(w.Value);
             try
             {
                 ThreadPool.QueueUserWorkItem(delegate
                 {
-                    View v = null;
+                    TrayView v = null;
                     try { work(); }
                     catch (Exception e) { _log.Write("思わぬエラー: " + e.GetType().Name + ": " + e.Message); }
-                    try { v = Snapshot(); }
+                    try { v = _sup.Snapshot(); }
                     catch (Exception e) { _log.Write("思わぬエラー: " + e.GetType().Name + ": " + e.Message); }
                     Post(delegate { Done(v); });
                 });
             }
             catch (Exception e)
             {
-                _busy = false;
+                _gate.Abandon();
                 _log.Write("思わぬエラー: 作業を始められません（" + e.Message + "）");
             }
         }
 
-        void Done(View v)
+        Action WorkFor(Work w)
         {
-            _busy = false;
+            switch (w)
+            {
+                case Work.Startup: return _sup.Startup;
+                case Work.Poll: return _sup.Poll;
+                case Work.Rebuild: return _sup.Rebuild;
+                case Work.Start: return _sup.StartFromMenu;
+                case Work.Stop: return _sup.StopFromMenu;
+            }
+            return _sup.Exit;
+        }
+
+        void Done(TrayView v)
+        {
+            Work? next = _gate.Done(_clock.Elapsed);
             if (_ended) return;
-            if (_exitDone)
+            if (_sup.ExitDone)
             {
                 Finish();
                 return;
@@ -154,20 +133,7 @@ namespace JVLinkServerTray
                 _view = v;
                 Apply(v);
             }
-            if (_pending != null)
-            {
-                Action next = _pending;
-                _pending = null;
-                Run(next);
-            }
-        }
-
-        // A user's request waits for the running work item; the latest request wins.
-        void Request(Action work)
-        {
-            if (_ended) return;
-            if (_busy) _pending = work;
-            else Run(work);
+            Begin(next);
         }
 
         void Post(Action a)
@@ -178,24 +144,25 @@ namespace JVLinkServerTray
 
         void OnTick(object sender, EventArgs e)
         {
-            if (_busy || _exiting || _ended || _server == null) return;
-            Run(PollWork);
+            if (_ended) return;
+            Begin(_gate.Tick(_clock.Elapsed));
         }
 
-        void Apply(View v)
+        void Apply(TrayView v)
         {
             try
             {
+                bool exiting = _gate.Exiting;
                 _icon.Icon = Icons.For(v.Color);
-                _icon.Text = _exiting ? TrayText.Tooltip(TrayColor.Gray, "終了しています") : TrayText.Tooltip(v.Color, v.Reason);
+                _icon.Text = exiting ? TrayText.Tooltip(TrayColor.Gray, "終了しています") : TrayText.Tooltip(v.Color, v.Reason);
                 _statusItem.Text = MenuText(StatusText(v));
                 _restartsItem.Visible = v.RestartLine != null;
                 if (v.RestartLine != null) _restartsItem.Text = MenuText(v.RestartLine);
                 bool off = v.Stopped || v.Blocked;
                 _stopStartItem.Text = off ? "サーバーを起動する" : "サーバーを止める";
-                _stopStartItem.Enabled = v.Controllable && !_exiting;
-                _rebuildItem.Enabled = v.Controllable && !off && !_exiting;
-                _exitItem.Enabled = !_exiting;
+                _stopStartItem.Enabled = v.Controllable && !exiting;
+                _rebuildItem.Enabled = v.Controllable && !off && !exiting;
+                _exitItem.Enabled = !exiting;
             }
             catch (Exception e)
             {
@@ -203,9 +170,9 @@ namespace JVLinkServerTray
             }
         }
 
-        string StatusText(View v)
+        string StatusText(TrayView v)
         {
-            if (_exiting) return "状態: 終了しています（サーバーを止めています）";
+            if (_gate.Exiting) return "状態: 終了しています（サーバーを止めています）";
             TimeSpan greenFor = v.GreenSince.HasValue ? _clock.Elapsed - v.GreenSince.Value : TimeSpan.Zero;
             return TrayText.StatusLine(v.Color, v.Reason, greenFor, v.StoppedAt);
         }
@@ -241,20 +208,20 @@ namespace JVLinkServerTray
 
         void OnRebuild(object sender, EventArgs e)
         {
-            if (_exiting || _server == null) return;
-            Request(RebuildWork);
+            if (_ended || !_sup.Controllable) return;
+            Begin(_gate.Request(Work.Rebuild, _clock.Elapsed));
         }
 
         void OnStopStart(object sender, EventArgs e)
         {
-            if (_exiting || _server == null) return;
-            if (_view.Stopped || _view.Blocked) Request(StartWork);
-            else Request(StopWork);
+            if (_ended || !_sup.Controllable) return;
+            Work w = _view.Stopped || _view.Blocked ? Work.Start : Work.Stop;
+            Begin(_gate.Request(w, _clock.Elapsed));
         }
 
         void OnExit(object sender, EventArgs e)
         {
-            if (_exiting || _confirming || _ended) return;
+            if (_gate.Exiting || _confirming || _ended) return;
             DialogResult answer;
             _confirming = true;
             try
@@ -271,11 +238,11 @@ namespace JVLinkServerTray
             {
                 _confirming = false;
             }
-            if (answer != DialogResult.Yes || _exiting || _ended) return;
-            _exiting = true;
+            if (answer != DialogResult.Yes || _gate.Exiting || _ended) return;
+            Work? w = _gate.Request(Work.Exit, _clock.Elapsed);
             _timer.Stop();
             Apply(_view);
-            Request(ExitWork);
+            Begin(w);
         }
 
         // 4.8: sign-out or Windows shutting down. Leave the server alone; just take the icon away and go.
@@ -289,7 +256,6 @@ namespace JVLinkServerTray
             }
             if (_ended) return;
             _log.Write("終了: サインアウトか Windows の終了です。アイコンを消して終わります（サーバーは止めません）");
-            _exiting = true;
             Finish();
         }
 
@@ -297,277 +263,12 @@ namespace JVLinkServerTray
         {
             if (_ended) return;
             _ended = true;
+            _gate.End();
             try { _timer.Stop(); _timer.Dispose(); } catch (Exception) { }
             try { SystemEvents.SessionEnding -= OnSessionEnding; } catch (Exception) { }
             try { _icon.Visible = false; _icon.Dispose(); } catch (Exception) { }
             try { _menu.Dispose(); } catch (Exception) { }
             ExitThread();
-        }
-
-        // ---- the work item (thread pool, one at a time) -------------------------------------------
-
-        void StartupWork()
-        {
-            _log.Write("起動: JVLinkServer Tray " + TrayVersion.Value + " を起動しました（設定 " + _configPath
-                + (_configError == null ? "、ポート " + _config.Port : "") + "、記録 " + _log.Dir + "）");
-            int deleted = _log.Cleanup(DateTime.Now, 14);
-            if (deleted > 0) _log.Write("起動: 14 日より古い記録を " + deleted + " 個消しました");
-            if (_configError != null)
-            {
-                Block(_configError);
-                Observe(false);
-                return;
-            }
-            if (!_server.ExeExists())
-            {
-                Block(MissingExe);
-                Observe(false);
-                return;
-            }
-
-            HealthReport h = _client.Get(2000);
-            int count = -1;
-            string listError = null;
-            try { count = _server.FindAll().Count; }
-            catch (Exception e) { listError = e.Message; }
-
-            if (count < 0 && h.Kind == HealthKind.Unreachable)
-            {
-                Block("プロセスの一覧を取れません（" + listError + "）");
-            }
-            else
-            {
-                StartupPlan plan = count < 0 ? StartupPlan.Adopt : Startup.Decide(h.Kind, count);
-                if (count < 0) _log.Write("起動: プロセスの一覧を取れません（" + listError + "）。/health が答えるので引き継ぎます");
-                if (plan == StartupPlan.Spawn)
-                {
-                    StartServer("トレイの起動");
-                }
-                else
-                {
-                    Process sup = count > 0 ? FindSupervisor() : null;
-                    SetWatched(sup);
-                    Started();
-                    string who = sup != null ? "見張り役 pid " + Pid(sup) : "見張り役が見つからないので HTTP だけで見ます";
-                    if (plan == StartupPlan.Adopt)
-                        _log.Write("引き継ぎ: 動いているサーバーを見張ります（/health: " + h.Status + "、" + who + "）");
-                    else
-                        _log.Write("引き継ぎ: 起動しかけのサーバーを待ちます（/health は答えません、プロセス " + count + " 個、" + who + "）");
-                }
-            }
-            Observe(false);
-        }
-
-        void PollWork()
-        {
-            Observe(true);
-        }
-
-        // One look: /health, the watched process, Watchdog.Step. Restarts when told to (allowRestart).
-        void Observe(bool allowRestart)
-        {
-            HealthReport h = _client != null ? _client.Get(_healthTimeoutMs) : HealthReport.Unreachable("設定を読めません");
-            bool alive = WatchedAlive();
-            if (!alive && h.Kind != HealthKind.Unreachable)
-            {
-                Rewatch();
-                alive = true;
-            }
-            TimeSpan now = _clock.Elapsed;
-            Decision d = _watchdog.Step(alive, h, now);
-            _lastHealth = h;
-            Note(d, now);
-            if (allowRestart && d.Action == WatchAction.StopAndStart && _server != null)
-            {
-                _log.Write("起こし直し: " + d.Reason);
-                if (StopServer()) StartServer("起こし直し");
-                Observe(false);
-            }
-        }
-
-        void Note(Decision d, TimeSpan now)
-        {
-            if (_lastColor == null || _lastColor.Value != d.Color)
-            {
-                _log.Write("色: " + (_lastColor == null ? "" : TrayText.ColorName(_lastColor.Value) + " → ")
-                    + TrayText.ColorName(d.Color) + "（" + d.Reason + "）");
-                _greenSince = d.Color == TrayColor.Green ? (TimeSpan?)now : null;
-            }
-            _lastColor = d.Color;
-            _lastReason = d.Reason;
-        }
-
-        View Snapshot()
-        {
-            var v = new View();
-            v.Color = _lastColor ?? TrayColor.Yellow;
-            v.Reason = _lastReason ?? "起動しています";
-            v.Stopped = _stopped;
-            v.Blocked = _blocked && !_stopped;
-            v.Controllable = _server != null;
-            v.GreenSince = _greenSince;
-            v.StoppedAt = _stoppedAt;
-            v.RestartLine = TrayText.RestartLine(_lastHealth);
-            return v;
-        }
-
-        void RebuildWork()
-        {
-            _log.Write("メニュー: サーバーを作り直します");
-            if (!_server.ExeExists()) Block(MissingExe);
-            else if (StopServer()) StartServer("メニューの「作り直す」");
-            Observe(false);
-        }
-
-        // 起動する: also clears whatever is left (from a block or a stop) before starting.
-        void StartWork()
-        {
-            _log.Write("メニュー: サーバーを起動します");
-            if (!_server.ExeExists()) Block(MissingExe);
-            else if (StopServer()) StartServer("メニューの「起動する」");
-            Observe(false);
-        }
-
-        void StopWork()
-        {
-            _log.Write("メニュー: サーバーを止めます");
-            UserStop();
-            StopServer();     // Blocked turns the gray into red with the reason
-            Observe(false);
-        }
-
-        void ExitWork()
-        {
-            if (_server != null)
-            {
-                _log.Write("終了: メニューから。サーバーを止めてからトレイを終わります");
-                UserStop();
-                StopResult r = _server.Stop(_client, _watched, _config.ShutdownTimeoutSeconds, _log);
-                if (r == StopResult.Clean) SetWatched(null);
-                else _log.Write("終了: " + CannotClean + "（そのまま終わります）");
-            }
-            _log.Write("終了: トレイを終わります");
-            _exitDone = true;
-        }
-
-        // 4.5. True when nothing is left; otherwise Blocked (and never start: ServerStarted clears Blocked).
-        bool StopServer()
-        {
-            StopResult r = _server.Stop(_client, _watched, _config.ShutdownTimeoutSeconds, _log);
-            if (r == StopResult.Clean)
-            {
-                SetWatched(null);
-                return true;
-            }
-            Block(CannotClean);
-            return false;
-        }
-
-        bool StartServer(string why)
-        {
-            if (!_server.ExeExists())
-            {
-                Block(MissingExe);
-                return false;
-            }
-            int unreadable = _server.CountUnreadableSameName();
-            if (unreadable != 0)
-            {
-                _log.Write("起動: 同じ名前でパスを読めないプロセスがあります（" + (unreadable < 0 ? "一覧を取れません" : unreadable + " 個") + "）");
-                Block(CannotCleanUnreadable);
-                return false;
-            }
-            Process p;
-            try
-            {
-                p = _server.Start();
-            }
-            catch (Exception e)
-            {
-                Block("サーバーを起動できません（" + e.Message + "）");
-                return false;
-            }
-            if (p == null)
-            {
-                Block("サーバーを起動できません");
-                return false;
-            }
-            SetWatched(p);
-            Started();
-            _log.Write("起動: サーバーを起動しました（" + why + "、pid " + Pid(p) + "）");
-            return true;
-        }
-
-        Process FindSupervisor()
-        {
-            try { return _server.FindSupervisor(); }
-            catch (Exception e)
-            {
-                _log.Write("見張り: 見張り役を探せません（" + e.Message + "）");
-                return null;
-            }
-        }
-
-        bool WatchedAlive()
-        {
-            if (_watched == null) return true;
-            try { return !_watched.HasExited; }
-            catch (Exception e)
-            {
-                _log.Write("見張り: 見張り役の様子を取れないので、HTTP だけで見ます（" + e.Message + "）");
-                SetWatched(null);
-                return true;
-            }
-        }
-
-        // The watched supervisor has ended but /health answers: another supervisor serves the port.
-        void Rewatch()
-        {
-            string old = Pid(_watched);
-            Process p = _server != null ? FindSupervisor() : null;
-            SetWatched(p);
-            if (p != null)
-                _log.Write("引き継ぎ直し: 見張り役（pid " + old + "）は終わりましたが /health が答えます。見張り役 pid " + Pid(p) + " を見張ります");
-            else
-                _log.Write("引き継ぎ直し: 見張り役（pid " + old + "）は終わりましたが /health が答えます。見張り役が見つからないので、HTTP だけで見ます");
-        }
-
-        void SetWatched(Process p)
-        {
-            if (_watched != null && _watched != p)
-            {
-                try { _watched.Dispose(); } catch (Exception) { }
-            }
-            _watched = p;
-        }
-
-        void Block(string reason)
-        {
-            _watchdog.Blocked(reason);
-            _blocked = true;
-            _stopped = false;
-            _log.Write("起こし直しをやめます: " + reason + "（メニューの「サーバーを起動する」で確かめ直します）");
-        }
-
-        void Started()
-        {
-            _watchdog.ServerStarted(_clock.Elapsed);
-            _blocked = false;
-            _stopped = false;
-        }
-
-        void UserStop()
-        {
-            _watchdog.UserStopped();
-            _stopped = true;
-            _stoppedAt = DateTime.Now;
-        }
-
-        static string Pid(Process p)
-        {
-            if (p == null) return "?";
-            try { return p.Id.ToString(); }
-            catch (Exception) { return "?"; }
         }
     }
 }

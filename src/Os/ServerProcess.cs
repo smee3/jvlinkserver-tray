@@ -14,8 +14,6 @@ namespace JVLinkServerTray
         public string CommandLine;
     }
 
-    public enum StopResult { Clean, Blocked }
-
     // Starts, finds and stops the server. Processes are matched strictly by the full path of ServerExe.
     public sealed class ServerProcess
     {
