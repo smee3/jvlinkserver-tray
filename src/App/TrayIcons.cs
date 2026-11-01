@@ -9,8 +9,9 @@ namespace JVLinkServerTray
     // The four tray icons, drawn for the taskbar as it is now (its theme gives the fill, its DPI the size)
     // and drawn again when that changes. UI thread only.
     //
-    // The size comes from the taskbar's own DPI, not the system DPI: the system DPI is fixed when the user
-    // signs in, but a Remote Desktop client can change the display's scale later, and the taskbar follows.
+    // The size comes from the taskbar's own DPI, not the system DPI: the system DPI a process sees stays at
+    // its value from when the process started (a tray started at sign-in keeps it), but a Remote Desktop
+    // client can change the display's scale later, and the taskbar follows.
     // The process is per-monitor DPI aware (app.manifest), so Windows reports the real values.
     public static class TrayIcons
     {
