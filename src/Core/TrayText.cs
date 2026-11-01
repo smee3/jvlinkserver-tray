@@ -92,7 +92,7 @@ namespace JVLinkServerTray
         public static string ExitQuestion(bool controlsServer)
         {
             if (!controlsServer) return "終了しますか？";
-            return "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
+            return "JVLinkServer を止めて、終了します。よろしいですか？";
         }
 
         // The second menu line, or null when /health gave no restart information.

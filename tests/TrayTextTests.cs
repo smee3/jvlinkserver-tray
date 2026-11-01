@@ -65,8 +65,7 @@ namespace JVLinkServerTray.Tests
             Assert.Equal("状態: 止まっています", TrayText.StatusLine(TrayColor.Red, null, TimeSpan.Zero, at, 0), "red none");
         }
         [Test] public static void TrayText_exitQuestion() {
-            Assert.Equal("サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？",
-                TrayText.ExitQuestion(true), "controls the server");
+            Assert.Equal("JVLinkServer を止めて、終了します。よろしいですか？", TrayText.ExitQuestion(true), "controls the server");
             Assert.Equal("終了しますか？", TrayText.ExitQuestion(false), "controls no server (ini not read)");
         }
         [Test] public static void TrayText_restartLine() {
