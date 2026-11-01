@@ -123,5 +123,31 @@ namespace JVLinkServerTray.Tests
             Assert.Equal(TrayColor.Red, d.Color, "red"); Assert.Equal(WatchAction.None, d.Action, "none");
             Assert.True(d.Reason.Contains("見つかりません"), "reason");
         }
+        [Test] public static void Watchdog_unknown_isRed_retriedOnTheBackoffSchedule() {
+            var w = W(); w.Unknown("プロセスの一覧を取れません", S(0));
+            var a = w.Step(true, Down(), S(9));
+            Assert.Equal(TrayColor.Red, a.Color, "red"); Assert.Equal(WatchAction.None, a.Action, "waits");
+            Assert.True(a.Reason.StartsWith("プロセスの一覧を取れません。あと "), "reason: " + a.Reason);
+            Assert.True(a.Reason.EndsWith("秒で確かめ直します"), "reason: " + a.Reason);
+            var b = w.Step(true, Down(), S(10));
+            Assert.Equal(WatchAction.StopAndStart, b.Action, "retry at 10 s"); Assert.Equal(1, w.Attempt, "attempt");
+            w.Unknown("プロセスの一覧を取れません", S(12));            // the retry could not tell either
+            Assert.Equal(WatchAction.None, w.Step(true, Down(), S(41)).Action, "before 30 s");
+            Assert.Equal(WatchAction.StopAndStart, w.Step(true, Down(), S(42)).Action, "at 30 s");
+        }
+        [Test] public static void Watchdog_unknown_answerClearsIt() {
+            var w = W(); w.Unknown("プロセスの一覧を取れません", S(0));
+            Assert.Equal(TrayColor.Green, w.Step(true, Ok(), S(5)).Color, "the server answers: green");
+            var d = w.Step(true, Down(), S(10));
+            Assert.Equal(TrayColor.Yellow, d.Color, "then the normal rules (grace)"); Assert.Equal(WatchAction.None, d.Action, "none");
+        }
+        [Test] public static void Watchdog_unknown_userStopAndBlockWin() {
+            var w = W(); w.Unknown("プロセスの一覧を取れません", S(0)); w.UserStopped();
+            Assert.Equal(TrayColor.Gray, w.Step(false, Down(), S(100)).Color, "gray");
+            Assert.Equal(WatchAction.None, w.Step(false, Down(), S(200)).Action, "no retry while stopped");
+            var b = W(); b.Unknown("プロセスの一覧を取れません", S(0)); b.Blocked("片付けられないプロセスがあります");
+            var d = b.Step(false, Down(), S(100));
+            Assert.Equal("片付けられないプロセスがあります", d.Reason, "blocked"); Assert.Equal(WatchAction.None, d.Action, "none");
+        }
     }
 }

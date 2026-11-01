@@ -10,10 +10,13 @@ namespace JVLinkServerTray
     // The tray (design 4.3-4.9). Threading: the UI thread owns the icon, the menu, the timer and the
     // WorkGate. Everything that can block (HTTP, WMI, starting and stopping the server) is a Supervisor work
     // item run one at a time on the thread pool; it hands an immutable TrayView back to the UI thread.
+    // The timer keeps ticking while exiting: it is also the stall guard (WorkGate), so a stuck work item
+    // shows red and never keeps 終了 from finishing.
     public sealed class TrayApp : ApplicationContext
     {
         const string Title = "JVLinkServer Tray";
         const string ExitQuestion = "サーバーも止まります。JVLinkServer につないでいるプログラムは、データを取れなくなります。終了しますか？";
+        const string StallReason = "トレイの作業が終わりません";
 
         // Set once.
         readonly TrayLog _log;
@@ -39,7 +42,7 @@ namespace JVLinkServerTray
             IServerOps ops = configError == null ? new ServerOps(config, log) : null;
             _sup = new Supervisor(ops, config, configError, configPath, log.Dir, log,
                 delegate { return _clock.Elapsed; }, delegate { return DateTime.Now; });
-            _gate = new WorkGate(_sup.Controllable);
+            _gate = new WorkGate(_sup.Controllable, Supervisor.StallLimit(config));
             int poll = Supervisor.PollSeconds(config);
 
             _invoker = new Control();
@@ -103,6 +106,7 @@ namespace JVLinkServerTray
             {
                 _gate.Abandon();
                 _log.Write("思わぬエラー: 作業を始められません（" + e.Message + "）");
+                if (_gate.ShouldFinish) Finish();
             }
         }
 
@@ -119,11 +123,27 @@ namespace JVLinkServerTray
             return _sup.Exit;
         }
 
+        static string WorkName(Work w)
+        {
+            switch (w)
+            {
+                case Work.Startup: return "起動";
+                case Work.Poll: return "様子見";
+                case Work.Rebuild: return "作り直す";
+                case Work.Start: return "起動する";
+                case Work.Stop: return "止める";
+            }
+            return "終了";
+        }
+
         void Done(TrayView v)
         {
-            Work? next = _gate.Done(_clock.Elapsed);
             if (_ended) return;
-            if (_sup.ExitDone)
+            TimeSpan now = _clock.Elapsed;
+            if (_gate.Stalled)
+                _log.Write("見張り: トレイの作業（" + WorkName(_gate.Running) + "）が " + (int)_gate.BusyFor(now).TotalSeconds + " 秒かかって終わりました");
+            Work? next = _gate.Done(now);
+            if (_gate.ShouldFinish)
             {
                 Finish();
                 return;
@@ -145,7 +165,33 @@ namespace JVLinkServerTray
         void OnTick(object sender, EventArgs e)
         {
             if (_ended) return;
-            Begin(_gate.Tick(_clock.Elapsed));
+            TimeSpan now = _clock.Elapsed;
+            bool wasStalled = _gate.Stalled;
+            Work running = _gate.Running;
+            TimeSpan busyFor = _gate.BusyFor(now);
+            Work? w = _gate.Tick(now);
+            if (!wasStalled && _gate.Stalled)
+            {
+                _log.Write("見張り: トレイの作業（" + WorkName(running) + "）が " + (int)busyFor.TotalSeconds
+                    + " 秒たっても終わりません。終了はこの作業を待ちません");
+                var v = new TrayView();
+                v.Color = TrayColor.Red;
+                v.Reason = StallReason;
+                v.Stopped = _view.Stopped;
+                v.Blocked = _view.Blocked;
+                v.Controllable = _view.Controllable;
+                v.StoppedAt = _view.StoppedAt;
+                v.RestartLine = _view.RestartLine;
+                _view = v;
+                Apply(v);
+            }
+            if (_gate.ShouldFinish)
+            {
+                _log.Write("終了: トレイの作業が終わらないので、待たずに終わります（サーバーは止めません）");
+                Finish();
+                return;
+            }
+            Begin(w);
         }
 
         void Apply(TrayView v)
@@ -240,7 +286,12 @@ namespace JVLinkServerTray
             }
             if (answer != DialogResult.Yes || _gate.Exiting || _ended) return;
             Work? w = _gate.Request(Work.Exit, _clock.Elapsed);
-            _timer.Stop();
+            if (_gate.ShouldFinish)
+            {
+                _log.Write("終了: トレイの作業が終わらないので、待たずに終わります（サーバーは止めません）");
+                Finish();
+                return;
+            }
             Apply(_view);
             Begin(w);
         }

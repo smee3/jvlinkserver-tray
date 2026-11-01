@@ -18,11 +18,17 @@ namespace JVLinkServerTray
     // The work items (design 4.3-4.11): startup, each look, the menu's actions and 終了. One runs at a time,
     // never on the UI thread (TrayApp and WorkGate see to that), and only they touch the state below.
     // IServerOps does the OS side, so the tests can drive this with a fake.
+    //
+    // A process list that fails or times out means "could not tell": red, and retried on the backoff schedule
+    // through StopServer, which gives true only after a clean list, so a retry never starts a second server.
+    // Real reasons not to start stay red until 起動する (spec 4.5, 4.11): a refused kill, a same-name process
+    // with an unreadable path seen by a list that worked, a missing EXE.
     public sealed class Supervisor
     {
         const string MissingExe = "JVLinkServer.exe が見つかりません（ini の ServerExe）";
         const string CannotClean = "片付けられないプロセスがあります";
         const string CannotCleanUnreadable = "片付けられないプロセスがあります（パスを読めない）";
+        const string NoList = "プロセスの一覧を取れません";
 
         readonly IServerOps _ops;          // null when the ini could not be read
         readonly TrayConfig _config;
@@ -35,13 +41,12 @@ namespace JVLinkServerTray
         readonly Watchdog _watchdog;
         readonly int _healthTimeoutMs;
 
-        bool _stopped, _blocked;
+        bool _stopped, _blocked, _unknown;
         DateTime _stoppedAt;
         TrayColor? _lastColor;
         string _lastReason;
         TimeSpan? _greenSince;
         HealthReport _lastHealth;
-        volatile bool _exitDone;
 
         // configError != null: the ini could not be read; ops is then ignored and no server is controlled.
         public Supervisor(IServerOps ops, TrayConfig config, string configError, string configPath, string logDir,
@@ -66,10 +71,14 @@ namespace JVLinkServerTray
             return Math.Min(Math.Max(config.PollSeconds, 1), 3600);
         }
 
-        public bool Controllable { get { return _ops != null; } }
+        // How long a work item may run before the UI thread stops waiting for it: a stop can take
+        // ShutdownTimeoutSeconds plus the bounded process lists.
+        public static TimeSpan StallLimit(TrayConfig config)
+        {
+            return TimeSpan.FromSeconds(Math.Min(Math.Max(config.ShutdownTimeoutSeconds, 0), 3600) + 60);
+        }
 
-        // True once Exit has run.
-        public bool ExitDone { get { return _exitDone; } }
+        public bool Controllable { get { return _ops != null; } }
 
         public void Startup()
         {
@@ -98,12 +107,12 @@ namespace JVLinkServerTray
 
             if (count < 0 && h.Kind == HealthKind.Unreachable)
             {
-                Block("プロセスの一覧を取れません（" + listError + "）");
+                CouldNotTell("トレイの起動のとき、" + listError);
             }
             else
             {
                 StartupPlan plan = count < 0 ? StartupPlan.Adopt : JVLinkServerTray.Startup.Decide(h.Kind, count);
-                if (count < 0) _log.Write("起動: プロセスの一覧を取れません（" + listError + "）。/health が答えるので引き継ぎます");
+                if (count < 0) _log.Write("起動: " + NoList + "（" + listError + "）。/health が答えるので引き継ぎます");
                 if (plan == StartupPlan.Spawn)
                 {
                     StartServer("トレイの起動");
@@ -145,11 +154,25 @@ namespace JVLinkServerTray
             Observe(false);
         }
 
+        // 止める: gray, no restarts. A real block turns it red with the reason; a list that cannot be read
+        // keeps it gray (the user's stop is kept; 起動する looks again before it starts anything).
         public void StopFromMenu()
         {
             _log.Write("メニュー: サーバーを止めます");
             UserStop();
-            StopServer();     // Blocked turns the gray into red with the reason
+            StopResult r = _ops.Stop(_config.ShutdownTimeoutSeconds);
+            if (r == StopResult.Clean)
+            {
+                _ops.Unwatch();
+            }
+            else if (r == StopResult.Blocked)
+            {
+                Block(CannotClean);
+            }
+            else
+            {
+                _log.Write("停止: " + NoList + "。止まったか確かめられないまま、灰にします（「サーバーを起動する」で確かめ直します）");
+            }
             Observe(false);
         }
 
@@ -161,10 +184,10 @@ namespace JVLinkServerTray
                 UserStop();
                 StopResult r = _ops.Stop(_config.ShutdownTimeoutSeconds);
                 if (r == StopResult.Clean) _ops.Unwatch();
+                else if (r == StopResult.Unknown) _log.Write("終了: " + NoList + "。止まったか確かめられません（そのまま終わります）");
                 else _log.Write("終了: " + CannotClean + "（そのまま終わります）");
             }
             _log.Write("終了: トレイを終わります");
-            _exitDone = true;
         }
 
         public TrayView Snapshot()
@@ -186,7 +209,16 @@ namespace JVLinkServerTray
         {
             HealthReport h = _ops != null ? _ops.Health(_healthTimeoutMs) : HealthReport.Unreachable("設定を読めません");
             bool alive = WatchedAlive();
-            if (!alive && h.Kind != HealthKind.Unreachable)
+            if (_unknown && h.Kind != HealthKind.Unreachable)
+            {
+                // The list could not be read, but a server answers: watch it (spec 4.7), do not restart it.
+                bool found = WatchSupervisor();
+                Started();
+                _log.Write("引き継ぎ: /health が答えるので、動いているサーバーを見張ります（/health: " + h.Status + "、"
+                    + (found ? "見張り役 pid " + _ops.WatchedPid : "見張り役が見つからないので HTTP だけで見ます") + "）");
+                alive = true;
+            }
+            else if (!alive && h.Kind != HealthKind.Unreachable)
             {
                 Rewatch();
                 alive = true;
@@ -215,7 +247,7 @@ namespace JVLinkServerTray
             _lastReason = d.Reason;
         }
 
-        // 4.5. True when nothing is left; otherwise Blocked (and never start: ServerStarted clears Blocked).
+        // 4.5. True only when a list that worked shows nothing left. Blocked: red until 起動する. Unknown: retried.
         bool StopServer()
         {
             StopResult r = _ops.Stop(_config.ShutdownTimeoutSeconds);
@@ -224,7 +256,8 @@ namespace JVLinkServerTray
                 _ops.Unwatch();
                 return true;
             }
-            Block(CannotClean);
+            if (r == StopResult.Unknown) CouldNotTell("止まったか確かめられません");
+            else Block(CannotClean);
             return false;
         }
 
@@ -236,9 +269,14 @@ namespace JVLinkServerTray
                 return false;
             }
             int unreadable = _ops.CountUnreadableSameName();
-            if (unreadable != 0)
+            if (unreadable < 0)
             {
-                _log.Write("起動: 同じ名前でパスを読めないプロセスがあります（" + (unreadable < 0 ? "一覧を取れません" : unreadable + " 個") + "）");
+                CouldNotTell("起動の前に、同じ名前のプロセスを確かめられません");
+                return false;
+            }
+            if (unreadable > 0)
+            {
+                _log.Write("起動: 同じ名前でパスを読めないプロセスがあります（" + unreadable + " 個）");
                 Block(CannotCleanUnreadable);
                 return false;
             }
@@ -296,11 +334,23 @@ namespace JVLinkServerTray
                 _log.Write("引き継ぎ直し: 見張り役（pid " + old + "）は終わりましたが /health が答えます。見張り役が見つからないので、HTTP だけで見ます");
         }
 
+        // Could not tell whether a server is left: red, retried on the backoff schedule (Watchdog.Unknown).
+        void CouldNotTell(string why)
+        {
+            _watchdog.Unknown(NoList, _clock());
+            _unknown = true;
+            _blocked = false;
+            _stopped = false;
+            _log.Write("起こし直しを待ちます: " + NoList + "（" + why + "）。"
+                + (int)Backoff.Delay(_watchdog.Attempt).TotalSeconds + " 秒後に確かめ直します");
+        }
+
         void Block(string reason)
         {
             _watchdog.Blocked(reason);
             _blocked = true;
             _stopped = false;
+            _unknown = false;
             _log.Write("起こし直しをやめます: " + reason + "（メニューの「サーバーを起動する」で確かめ直します）");
         }
 
@@ -309,12 +359,14 @@ namespace JVLinkServerTray
             _watchdog.ServerStarted(_clock());
             _blocked = false;
             _stopped = false;
+            _unknown = false;
         }
 
         void UserStop()
         {
             _watchdog.UserStopped();
             _stopped = true;
+            _unknown = false;
             _stoppedAt = _wall();
         }
     }

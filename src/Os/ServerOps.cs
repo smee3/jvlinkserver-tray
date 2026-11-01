@@ -14,7 +14,7 @@ namespace JVLinkServerTray
 
         public ServerOps(TrayConfig config, TrayLog log)
         {
-            _server = new ServerProcess(config.ServerExe, config.ServerArgs);
+            _server = new ServerProcess(config.ServerExe, config.ServerArgs, log);
             _client = new HealthClient(config.Port);
             _log = log;
         }

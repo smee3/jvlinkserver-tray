@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -138,9 +139,95 @@ namespace JVLinkServerTray.Tests
             Assert.Equal(StopResult.Clean, ServerProcess.DecideStop(0, 0), "0/0");
             Assert.Equal(StopResult.Blocked, ServerProcess.DecideStop(1, 0), "readable left");
             Assert.Equal(StopResult.Blocked, ServerProcess.DecideStop(0, 1), "unreadable same name");
-            Assert.Equal(StopResult.Blocked, ServerProcess.DecideStop(-1, 0), "readable unknown");
-            Assert.Equal(StopResult.Blocked, ServerProcess.DecideStop(0, -1), "unreadable unknown");
+            Assert.Equal(StopResult.Unknown, ServerProcess.DecideStop(-1, 0), "readable unknown");
+            Assert.Equal(StopResult.Unknown, ServerProcess.DecideStop(0, -1), "unreadable unknown");
         }
+
+        // ---- the process list (WMI) is bounded; trouble with it means "could not tell" -----------
+
+        static int Count(string text, string part)
+        {
+            int n = 0, i = 0;
+            while ((i = text.IndexOf(part, i, StringComparison.Ordinal)) >= 0) { n++; i += part.Length; }
+            return n;
+        }
+
+        [Test] public static void Os_boundedCall_timesOut_andLeavesOneLateCallAtATime() {
+            var b = new BoundedCall(300);
+            var gate = new ManualResetEvent(false);
+            var sw = Stopwatch.StartNew();
+            try { b.Run(delegate { gate.WaitOne(5000); }); throw new Exception("TimeoutException expected"); }
+            catch (TimeoutException) { }
+            Assert.True(sw.ElapsedMilliseconds >= 250 && sw.ElapsedMilliseconds < 2000, "bounded: " + sw.ElapsedMilliseconds + " ms");
+            bool ran = false;
+            sw.Restart();
+            try { b.Run(delegate { ran = true; }); throw new Exception("TimeoutException expected while the late call runs"); }
+            catch (TimeoutException) { }
+            Assert.False(ran, "no second call while the late one runs"); Assert.True(sw.ElapsedMilliseconds < 200, "fails at once");
+            gate.Set();
+            Assert.True(WaitFor(() => { try { b.Run(delegate { ran = true; }); return true; } catch (TimeoutException) { return false; } }, 3000), "works again");
+            Assert.True(ran, "ran");
+        }
+        [Test] public static void Os_boundedCall_passesTheCallsExceptionOn() {
+            var b = new BoundedCall(1000);
+            try { b.Run(delegate { throw new InvalidOperationException("wmi"); }); throw new Exception("expected the call's exception"); }
+            catch (InvalidOperationException e) { Assert.Equal("wmi", e.Message, "message"); }
+        }
+        [Test] public static void Os_stop_listHangs_isUnknown_bounded_loggedOncePerStreak() {
+            var dir = TempDir(); var log = new TrayLog(dir);
+            var sp = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) { Thread.Sleep(1500); }, 200);
+            var sw = Stopwatch.StartNew();
+            Assert.Equal(StopResult.Unknown, sp.Stop(null, null, 2, log), "could not tell");
+            Assert.True(sw.Elapsed.TotalSeconds < 12, "bounded: " + sw.Elapsed.TotalSeconds + " s");
+            string text = ReadLogs(dir);
+            Assert.Equal(1, Count(text, "プロセスの一覧を取れません（"), "logged once per streak: " + text);
+        }
+        [Test] public static void Os_stop_listThrows_isUnknown() {
+            var log = new TrayLog(TempDir());
+            var sp = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) { throw new InvalidOperationException("WMI failed"); }, 1000);
+            Assert.Equal(StopResult.Unknown, sp.Stop(null, null, 0, log), "could not tell");
+        }
+        [Test] public static void Os_stop_listSeesUnreadable_isBlocked_evenIfLaterScansFail() {
+            var log = new TrayLog(TempDir());
+            var always = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) { u.Add(4242); }, 1000);
+            Assert.Equal(StopResult.Blocked, always.Stop(null, null, 0, log), "unreadable seen");
+            int calls = 0;
+            var once = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) {
+                if (++calls > 1) throw new InvalidOperationException("WMI failed");
+                u.Add(4242);
+            }, 1000);
+            Assert.Equal(StopResult.Blocked, once.Stop(null, null, 0, log), "seen by a successful scan, then the list failed");
+            var none = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) { }, 1000);
+            Assert.Equal(StopResult.Clean, none.Stop(null, null, 0, log), "nothing left");
+        }
+        [Test] public static void Os_stop_slowList_looksOnceMoreAfterAKill() {
+            // A list slower than the kill wait must not end Stop right after a kill (that read as Blocked).
+            int calls = 0;
+            var log = new TrayLog(TempDir());
+            var sp = new ServerProcess(Fake(), "", log, delegate(List<ProcInfo> r, List<int> u) {
+                Thread.Sleep(400);
+                if (++calls == 2) { var pi = new ProcInfo(); pi.Pid = 999999; pi.CommandLine = "x --mode worker"; r.Add(pi); }
+            }, 5000);
+            sp.KillWaitMs = 200;
+            Assert.Equal(StopResult.Clean, sp.Stop(null, null, 0, log), "looked again after the kill");
+            Assert.Equal(3, calls, "lists");
+        }
+        [Test] public static void Os_countUnreadable_retriesUntilTheListComes() {
+            int calls = 0;
+            var sp = new ServerProcess(Fake(), "", null, delegate(List<ProcInfo> r, List<int> u) {
+                if (++calls < 3) throw new InvalidOperationException("WMI failed");
+                u.Add(7);
+            }, 1000);
+            Assert.Equal(1, sp.CountUnreadableSameName(), "retried until the list came");
+            Assert.Equal(3, calls, "calls");
+        }
+        [Test] public static void Os_countUnreadable_givesUpAfterAFewSeconds() {
+            var sp = new ServerProcess(Fake(), "", null, delegate(List<ProcInfo> r, List<int> u) { throw new InvalidOperationException("WMI failed"); }, 1000);
+            var sw = Stopwatch.StartNew();
+            Assert.Equal(-1, sp.CountUnreadableSameName(), "could not tell");
+            Assert.True(sw.Elapsed.TotalSeconds >= 3 && sw.Elapsed.TotalSeconds < 10, "retried for a few seconds: " + sw.Elapsed.TotalSeconds + " s");
+        }
+
         [Test] public static void Os_health_hang_timesOut() {
             try {
                 new ServerProcess(Fake(), "--port 18769 --hang-health").Start();

@@ -2,7 +2,7 @@ using System;
 
 namespace JVLinkServerTray
 {
-    public enum StopResult { Clean, Blocked }
+    public enum StopResult { Clean, Blocked, Unknown }
 
     // The tray's own record (TrayLog in src/Os). Never throws.
     public interface ITrayLog

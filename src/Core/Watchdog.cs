@@ -33,6 +33,7 @@ namespace JVLinkServerTray
         bool _escalationUsed;
         bool _stopped;
         string _blocked;
+        string _unknown;
 
         public int Attempt { get; private set; }
 
@@ -49,16 +50,34 @@ namespace JVLinkServerTray
             _failureAt = null;
             _stopped = false;
             _blocked = null;
+            _unknown = null;
         }
 
         public void UserStopped() { _stopped = true; }
 
-        public void Blocked(string reason) { _stopped = false; _blocked = reason ?? "起動できません"; }
+        // Red until 起動する: a real reason not to start (a refused kill, a missing EXE, ...).
+        public void Blocked(string reason) { _stopped = false; _unknown = null; _blocked = reason ?? "起動できません"; }
+
+        // The tray could not tell whether a server is left (the process list failed). Red; StopAndStart is
+        // retried on the backoff schedule from now, unless the server answers first.
+        public void Unknown(string reason, TimeSpan now)
+        {
+            _stopped = false;
+            _blocked = null;
+            _unknown = reason ?? "確かめられません";
+            _failureAt = now;
+            _unreachableCount = 0;
+        }
 
         public Decision Step(bool processAlive, HealthReport health, TimeSpan now)
         {
             if (_stopped) return new Decision(TrayColor.Gray, "停止中", WatchAction.None);
             if (_blocked != null) return new Decision(TrayColor.Red, _blocked, WatchAction.None);
+            if (_unknown != null)
+            {
+                if (health.Kind == HealthKind.Unreachable) return Fail(_unknown, now, "確かめ直します");
+                ServerStarted(now);      // the server answers after all: watch it like a new one
+            }
 
             if (health.Kind == HealthKind.Healthy)
             {
@@ -73,7 +92,7 @@ namespace JVLinkServerTray
             _greenSince = null;
 
             if (!processAlive && health.Kind == HealthKind.Unreachable)
-                return Fail("サーバーのプロセスが終わりました", now);
+                return Fail("サーバーのプロセスが終わりました", now, "起動し直します");
 
             if (health.Kind == HealthKind.Answered)
             {
@@ -96,10 +115,10 @@ namespace JVLinkServerTray
             _unreachableCount++;
             if (_unreachableCount < _config.UnreachableLimit)
                 return new Decision(TrayColor.Yellow, "応答がありません（" + _unreachableCount + "/" + _config.UnreachableLimit + "）", WatchAction.None);
-            return Fail(_unreachableCount + " 回続けて応答がありません", now);
+            return Fail(_unreachableCount + " 回続けて応答がありません", now, "起動し直します");
         }
 
-        Decision Fail(string reason, TimeSpan now)
+        Decision Fail(string reason, TimeSpan now, string verb)
         {
             if (_failureAt == null) _failureAt = now;
             TimeSpan due = _failureAt.Value + Backoff.Delay(Attempt);
@@ -108,10 +127,10 @@ namespace JVLinkServerTray
                 Attempt++;
                 _failureAt = null;
                 _unreachableCount = 0;
-                return new Decision(TrayColor.Red, reason + "。起動し直します", WatchAction.StopAndStart);
+                return new Decision(TrayColor.Red, reason + "。" + verb, WatchAction.StopAndStart);
             }
             int wait = (int)Math.Ceiling((due - now).TotalSeconds);
-            return new Decision(TrayColor.Red, reason + "。あと " + wait + " 秒で起動し直します", WatchAction.None);
+            return new Decision(TrayColor.Red, reason + "。あと " + wait + " 秒で" + verb, WatchAction.None);
         }
     }
 }
