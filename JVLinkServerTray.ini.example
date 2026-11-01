@@ -1,0 +1,12 @@
+; JVLinkServer の場所（JVLinkServer.exe のフルパス）
+ServerExe=C:\JVLinkServer\JVLinkServer.exe
+; JVLinkServer に渡す起動オプション（--port と --log-dir はトレイも読みます）
+ServerArgs=--port 8765 --log-dir C:\ProgramData\JVLinkServer\logs --startup-delay-sec 30 --recovery-retry-interval-sec 15
+; サーバーの状態を確認する間隔（秒）
+PollSeconds=5
+; 何回続けて応答がなければ落ちたと判断するか
+UnreachableLimit=6
+; 起動直後に応答がなくても待つ時間（秒）
+StartupGraceSeconds=60
+; 終了時にサーバーが止まるのを待つ時間（秒）
+ShutdownTimeoutSeconds=20
