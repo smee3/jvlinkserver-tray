@@ -1,0 +1,7 @@
+bin/
+*.ini
+!*.ini.example
+*.log
+*.dmp
+logs/
+.DS_Store
