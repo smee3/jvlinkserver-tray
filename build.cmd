@@ -1,8 +1,9 @@
 @echo off
 setlocal
 set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-set REFS=/r:System.dll /r:System.Core.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll
-set OPTS=/nologo /optimize+ /debug- %REFS%
+set REFS=/r:System.dll /r:System.Core.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Xml.dll
+rem The sources are UTF-8 without a BOM; say so, so that the build does not depend on the PC's code page.
+set OPTS=/nologo /optimize+ /debug- /codepage:65001 %REFS%
 cd /d "%~dp0"
 if not exist bin mkdir bin
 
