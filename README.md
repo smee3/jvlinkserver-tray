@@ -16,7 +16,7 @@ JRA-VAN、JV-Link、本家 JVLinkServer とは関係のない、個人の非公�
 
 1. zip をダウンロードしたら、展開する前に右クリック →「プロパティ」→「許可する」にチェックを入れて「OK」。それから好きなフォルダ（例: `C:\Tools\JVLinkServerTray`）に展開します。
 2. `JVLinkServerTray.ini.example` を `JVLinkServerTray.ini` に名前を変え、`ServerExe=` に `JVLinkServer.exe` のフルパスを書きます。ほかの項目は、そのままで動きます。
-3. JVLinkServer をスタートアップなどで自動起動しているなら、止めます。
+3. JVLinkServer をスタートアップなどで自動起動しているなら、止めます。いまターミナルで動いている JVLinkServer も閉じます（動いたままだと、トレイがそれを引き継ぎ、黒い画面も残ります）。
 4. PowerShell で、ログオン時に動くタスクを作って、動かします。
 
    ```powershell

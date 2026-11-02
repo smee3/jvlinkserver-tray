@@ -16,7 +16,7 @@
    - EXE に署名がないためです。これをしないと、初回に SmartScreen の「Windows によって PC が保護されました」が出ます。そのときは「詳細情報」→「実行」で動きます。
 3. 好きなフォルダに展開します。
 4. `JVLinkServerTray.ini.example` を `JVLinkServerTray.ini` に名前を変え、`ServerExe`（JVLinkServer.exe のフルパス）と `ServerArgs`（JVLinkServer に渡す起動オプション）を自分の環境に合わせます。`ServerExe` は、短い名前（8.3 形式）や subst のドライブを使わない、長いフルパスで書いてください。
-5. JVLinkServer をほかの方法（スタートアップなど）で自動起動しているなら、止めます。
+5. JVLinkServer をほかの方法（スタートアップなど）で自動起動しているなら、止めます。いまターミナルで動いている JVLinkServer も閉じます（動いたままだと、トレイがそれを引き継ぎ、黒い画面も残ります）。
 6. ログオン時に動くタスクを作ります。JV-Link の画面が見えるよう、SYSTEM ではなくログオンしているユーザーで実行します。PowerShell の例です。
 
    ```powershell
