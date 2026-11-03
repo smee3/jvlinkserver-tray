@@ -1,4 +1,4 @@
-# 入れかた・設定・更新・外しかた
+# 入れかた・自動起動・設定・更新・外しかた
 
 [README に戻る](../README.md)
 
@@ -16,21 +16,26 @@
    - EXE に署名がないためです。これをしないと、初回に SmartScreen の「Windows によって PC が保護されました」が出ます。そのときは「詳細情報」→「実行」で動きます。
 3. 好きなフォルダに展開します。
 4. `JVLinkServerTray.ini.example` を `JVLinkServerTray.ini` に名前を変え、`ServerExe`（JVLinkServer.exe のフルパス）と `ServerArgs`（JVLinkServer に渡す起動オプション）を自分の環境に合わせます。`ServerExe` は、短い名前（8.3 形式）や subst のドライブを使わない、長いフルパスで書いてください。
-5. JVLinkServer をほかの方法（スタートアップなど）で自動起動しているなら、止めます。いまターミナルで動いている JVLinkServer も閉じます（動いたままだと、トレイがそれを引き継ぎ、黒い画面も残ります）。
-6. ログオン時に動くタスクを作ります。JV-Link の画面が見えるよう、SYSTEM ではなくログオンしているユーザーで実行します。PowerShell の例です。
-
-   ```powershell
-   $dir = 'C:\Tools\JVLinkServerTray'   # EXE を置いた場所
-   $action   = New-ScheduledTaskAction -Execute "$dir\JVLinkServerTray.exe" -WorkingDirectory $dir
-   $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-   Register-ScheduledTask -TaskName 'JVLinkServerTray' -Action $action -Trigger $trigger -Settings $settings
-   ```
-
-   - `-ExecutionTimeLimit 0` は「時間で止めない」、`-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries` は「バッテリーで動いていても起動し、止めない」です。
-7. 一度ログオンし直すか、`Start-ScheduledTask -TaskName 'JVLinkServerTray'` で動かします。
+5. いまターミナルで動いている JVLinkServer を閉じます（動いたままだと、トレイがそれを引き継ぎ、黒い画面も残ります）。JVLinkServer をほかの方法（スタートアップなど）で自動起動しているなら、それも止めます。
+6. `JVLinkServerTray.exe` をダブルクリックして動かします。2回起動しても、2つ目はすぐに終わります。
 
 トレイが起動したとき、JVLinkServer がすでに動いていて答えるなら、新しく起動せず、そのサーバーを引き継いで見張ります（2つ目は起動しません）。
+
+## ログオン時に自動で起動する（任意）
+
+いつも動かしておきたいときだけ、ログオン時に動くタスクを作ります。JV-Link の画面が見えるよう、SYSTEM ではなくログオンしているユーザーで実行します。PowerShell の例です。
+
+```powershell
+$dir = 'C:\Tools\JVLinkServerTray'   # EXE を置いた場所
+$action   = New-ScheduledTaskAction -Execute "$dir\JVLinkServerTray.exe" -WorkingDirectory $dir
+$trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName 'JVLinkServerTray' -Action $action -Trigger $trigger -Settings $settings
+```
+
+- `-ExecutionTimeLimit 0` は「時間で止めない」、`-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries` は「バッテリーで動いていても起動し、止めない」です。
+- 次のログオンから自動で起動します。すぐに動かすなら `Start-ScheduledTask -TaskName 'JVLinkServerTray'` です（トレイがもう動いていれば要りません）。
+- やめるときは `Unregister-ScheduledTask -TaskName 'JVLinkServerTray' -Confirm:$false` です。
 
 ## ini の項目
 
@@ -48,7 +53,9 @@
 
 ## 更新のしかた
 
-サーバーを止めずに、トレイだけを入れ替えられます。
+ダブルクリックで動かしているときは、メニューの「終了…」で終わらせ（サーバーも止まります）、フォルダの `JVLinkServerTray.exe` を新しいものに置き換えて（ini はそのまま）、もう一度ダブルクリックします。
+
+ログオン時のタスクで動かしているときは、サーバーを止めずに、トレイだけを入れ替えられます。
 
 1. `Stop-ScheduledTask -TaskName 'JVLinkServerTray'` でトレイを終わらせます。サーバーは動き続けます。
 2. フォルダの `JVLinkServerTray.exe` を新しいものに置き換えます（ini はそのまま）。ダウンロードした EXE は、上と同じように「許可する」をしておきます。
@@ -57,7 +64,7 @@
 ## 外しかた
 
 1. メニューの「終了…」で終わらせます（サーバーも止まります）。
-2. ログオン時のタスクを消します（または、元の JVLinkServer の自動起動に戻します）。
+2. ログオン時のタスクを作っていたなら、消します（または、元の JVLinkServer の自動起動に戻します）。
 
    ```powershell
    Unregister-ScheduledTask -TaskName 'JVLinkServerTray' -Confirm:$false
