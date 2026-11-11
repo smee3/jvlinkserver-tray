@@ -9,7 +9,7 @@ namespace JVLinkServerTray.Tests
         [Test] public static void Harness_equal_failureNamesBothValues()
         {
             try { Assert.Equal("a", "b", "x"); }
-            catch (AssertionException e) { Assert.True(e.Message.Contains("a") && e.Message.Contains("b"), "message"); return; }
+            catch (AssertionException e) { Assert.True(e.Message.Contains("<a>") && e.Message.Contains("<b>"), "message: " + e.Message); return; }
             throw new Exception("AssertionException expected");
         }
     }

@@ -34,7 +34,10 @@ C# 5 で書ける範囲にとどめます（`$""` や `?.` は使えません）
   powershell -NoProfile -ExecutionPolicy Bypass -File <リポジトリ>\scripts\remote-smoke.ps1
   ```
 
-`bin\JVLinkServerTray.exe` を `--config` なしで動かさないでください。EXE の隣に ini がないと既定値（ポート 8765）で動き、同じ PC で動いている本物のサーバーを見張り始めます。
+`bin\JVLinkServerTray.exe` は、試験用の ini を `--config` で渡して動かします。EXE の隣に ini がなければ赤で止まりますが（0.2.0 から。0.1.0 は既定値のポート 8765 で動き、同じ PC で動いている本物のサーバーを見張り始めました）、`bin\` に ini を置いたまま `--config` なしで動かすと、その ini で動きます。
+
+- `remote-test.sh` は、`JVTRAY_REMOTE_DIR` がドライブの直下（`C:/` など）や `.`・`..` を含むときは、何もせずに止まります。そのフォルダの `src`・`tests`・`scripts`・`tools` を消してから送るためです。
+- `remote-smoke.ps1` は、前の回の残り（試験用のタスク、`bin\` のトレイや偽のサーバー、`bin\JVLinkServerTray.ini`）があると、何も変えずに止まります。`-CleanupOnly` で片付けてから、もう一度実行します。`bin\JVLinkServerTray.ini` は、スモークテストが書いたもの（1行目が `; smoke test only`）だけを消します。
 
 ## リリース
 
@@ -50,8 +53,8 @@ GitHub Actions（`.github/workflows/build.yml`）が、push と pull request の
 2. 同じ版のタグを付けて push します。
 
    ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 3. Actions が、ビルドとテストのあと、上の3つを付けた GitHub のリリースを作ります。タグ（`v` + 版）と `TrayVersion.Value` が違うときは、リリースを作らずに止まります。
 

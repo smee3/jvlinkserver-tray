@@ -6,6 +6,8 @@
 # is only read (GET /health) before and after. -CleanupOnly removes what an interrupted run left behind.
 # Step (8) plays a sign-out to the test tray only: WM_QUERYENDSESSION / WM_ENDSESSION sent to its own
 # .NET SystemEvents window (cancelled first, then for real).
+# Before it starts, the script only looks: if an earlier run left a task, processes or a guard ini behind,
+# it stops and asks for -CleanupOnly. It removes a guard ini only when a smoke run wrote it (first line).
 param([switch]$CleanupOnly)
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +27,7 @@ $ProbeOut = Join-Path $Work 'probe.txt'
 $Port = 18775
 $LivePort = 8765
 $TaskName = 'JVLinkServerTray-smoke'
+$Marker = '; smoke test only'   # the first line of every ini this script writes
 
 $P_Start = '起動: JVLinkServer Tray '
 $P_Spawned = '起動: サーバーを起動しました'
@@ -39,6 +42,7 @@ $P_Icon = 'アイコン: 描きました（'
 $P_IconAware = 'アイコン: 描きました（\d+ px、.+、PerMonitorV2）'
 
 $script:Failed = $false
+$script:Started = $false   # set once the checks before the run passed; nothing is touched before that
 
 function Say([string]$text) { Write-Output $text }
 
@@ -86,7 +90,14 @@ function Cleanup {
         Kill-Ours
         if (Wait-Until { (@(Trays).Count + @(Fakes).Count) -eq 0 } 5) { break }
     }
-    if (Test-Path -LiteralPath $GuardIni) { Remove-Item -LiteralPath $GuardIni -Force }
+    Remove-GuardIni
+}
+
+# Only a guard ini that a smoke run wrote (its first line is the marker) is ours to remove.
+function Remove-GuardIni {
+    if (-not (Test-Path -LiteralPath $GuardIni)) { return }
+    if ((Get-Content -LiteralPath $GuardIni -TotalCount 1 -Encoding UTF8) -eq $Marker) { Remove-Item -LiteralPath $GuardIni -Force }
+    else { Say "left $GuardIni in place: the smoke test did not write it" }
 }
 
 function Read-TrayLog {
@@ -176,17 +187,18 @@ if ($CleanupOnly) {
 $live0 = $null
 try {
     if (-not (Test-Path -LiteralPath $Tray) -or -not (Test-Path -LiteralPath $Fake)) { throw 'build first: bin\JVLinkServerTray.exe and bin\FakeJVLinkServer.exe are needed' }
-    if (Test-Path -LiteralPath $GuardIni) { throw "unexpected $GuardIni (remove it or run -CleanupOnly)" }
-    Cleanup
-    if (@(Trays).Count + @(Fakes).Count -ne 0) { throw 'tray or fake processes from an earlier run are still there' }
+    if (Test-Path -LiteralPath $GuardIni) { throw "unexpected $GuardIni (a smoke run left it: run -CleanupOnly; otherwise move it away)" }
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { throw "task $TaskName from an earlier run is there (run -CleanupOnly)" }
+    if (@(Trays).Count + @(Fakes).Count -ne 0) { throw 'tray or fake processes from bin\ are running (an earlier run? run -CleanupOnly)' }
     if (Get-Health $Port) { throw "something already answers on port $Port" }
+    $script:Started = $true
     $live0 = Live-Summary
     if ($live0) { Say ("live $LivePort before: status $($live0.Status), restart_count $($live0.Restarts), uptime $($live0.Uptime) s (read only)") }
     else { Say "live $LivePort before: no answer (read only)" }
 
     if (Test-Path -LiteralPath $Work) { Remove-Item -LiteralPath $Work -Recurse -Force }
     New-Item -ItemType Directory -Path $Logs -Force | Out-Null
-    $iniText = "; smoke test only`r`nServerExe=$Fake`r`nServerArgs=--port $Port --log-dir `"$Logs`"`r`n" +
+    $iniText = "$Marker`r`nServerExe=$Fake`r`nServerArgs=--port $Port --log-dir `"$Logs`"`r`n" +
         "PollSeconds=2`r`nUnreachableLimit=3`r`nStartupGraceSeconds=6`r`nShutdownTimeoutSeconds=5`r`n"
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($Ini, $iniText, $utf8)
@@ -409,24 +421,28 @@ public static class SmokeWin {
 } catch {
     Step 'x' $false ("aborted: " + $_.Exception.Message)
 } finally {
-    # (7) clean up and check
-    try { Cleanup } catch { Say ('cleanup error: ' + $_.Exception.Message) }
-    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    $left = @(Trays).Count + @(Fakes).Count
-    $live1 = Live-Summary
-    $liveOk = $false
-    $liveText = 'no answer'
-    if ($live1) {
-        $liveText = "status $($live1.Status), restart_count $($live1.Restarts), uptime $($live1.Uptime) s"
-        $liveOk = $live1.Status -eq 'healthy'
-        if ($live0) { $liveOk = $liveOk -and $live1.Restarts -eq $live0.Restarts -and $live1.Uptime -ge $live0.Uptime }
+    if ($script:Started) {
+        # (7) clean up and check
+        try { Cleanup } catch { Say ('cleanup error: ' + $_.Exception.Message) }
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        $left = @(Trays).Count + @(Fakes).Count
+        $live1 = Live-Summary
+        $liveOk = $false
+        $liveText = 'no answer'
+        if ($live1) {
+            $liveText = "status $($live1.Status), restart_count $($live1.Restarts), uptime $($live1.Uptime) s"
+            $liveOk = $live1.Status -eq 'healthy'
+            if ($live0) { $liveOk = $liveOk -and $live1.Restarts -eq $live0.Restarts -and $live1.Uptime -ge $live0.Uptime }
+        }
+        Step 7 ($left -eq 0 -and -not $task -and -not (Test-Path -LiteralPath $GuardIni) -and $liveOk) ("left: trays+fakes $left, task " + [bool]$task + ", guard ini " +
+            (Test-Path -LiteralPath $GuardIni) + "; live $LivePort after: $liveText")
+        Say '--- tray log ---'
+        Read-TrayLog | ForEach-Object { Say $_ }
+        Say '--- end ---'
+        if (Test-Path -LiteralPath $Work) { Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue }
+    } else {
+        Say 'nothing was started or changed'
     }
-    Step 7 ($left -eq 0 -and -not $task -and -not (Test-Path -LiteralPath $GuardIni) -and $liveOk) ("left: trays+fakes $left, task " + [bool]$task + ", guard ini " +
-        (Test-Path -LiteralPath $GuardIni) + "; live $LivePort after: $liveText")
-    Say '--- tray log ---'
-    Read-TrayLog | ForEach-Object { Say $_ }
-    Say '--- end ---'
-    if (Test-Path -LiteralPath $Work) { Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($script:Failed) { Say 'SMOKE FAILED'; exit 1 }
 Say 'SMOKE PASSED'

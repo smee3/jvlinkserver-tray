@@ -5,6 +5,13 @@ if [ -z "$JVTRAY_SSH_HOST" ] || [ -z "$JVTRAY_REMOTE_DIR" ]; then
   echo "usage: JVTRAY_SSH_HOST=<ssh host> JVTRAY_REMOTE_DIR=<remote dir> $0 [filter]" >&2
   exit 2
 fi
+# The next steps delete src, tests, scripts and tools inside this folder, so it must be a folder under a
+# drive (C:/src/jvlinkserver-tray), never a drive root, and without . or .. in it.
+if ! printf '%s' "$JVTRAY_REMOTE_DIR" | grep -Eq '^[A-Za-z]:/+[^/]' ||
+   printf '%s' "$JVTRAY_REMOTE_DIR" | grep -Eq '(^|/)\.\.?(/|$)'; then
+  echo "JVTRAY_REMOTE_DIR must be a folder under a drive, like C:/src/jvlinkserver-tray: $JVTRAY_REMOTE_DIR" >&2
+  exit 2
+fi
 cd "$(dirname "$0")/.." || exit 2
 WDIR=$(printf '%s' "$JVTRAY_REMOTE_DIR" | tr '/' '\\')
 SSH="ssh -o BatchMode=yes $JVTRAY_SSH_HOST"
