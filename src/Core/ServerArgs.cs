@@ -41,7 +41,7 @@ namespace JVLinkServerTray
         {
             string v = ValueAfter(args, "--port");
             int n;
-            if (v != null && int.TryParse(v, out n)) return n;
+            if (v != null && int.TryParse(v, out n) && n >= 1 && n <= 65535) return n;
             return DefaultPort;
         }
 

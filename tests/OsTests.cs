@@ -10,7 +10,7 @@ using System.Threading;
 
 namespace JVLinkServerTray.Tests
 {
-    // These tests start bin\FakeJVLinkServer.exe on ports 18765-18774 and 18776 only. They never touch the real server.
+    // These tests start bin\FakeJVLinkServer.exe on ports 18765-18774, 18776 and 18777 only. They never touch the real server.
     public static class OsTests
     {
         static string Fake()
@@ -268,6 +268,14 @@ namespace JVLinkServerTray.Tests
                 new ServerProcess(Fake(), "--port 18770 --answer 503").Start();
                 Assert.True(WaitFor(() => new HealthClient(18770).Get(1000).Kind == HealthKind.Answered, 5000), "answered");
                 Assert.Equal("starting", new HealthClient(18770).Get(1000).Status, "status");
+            } finally { Sweep(); }
+        }
+        [Test] public static void Os_health_oversizedBody_isAnswered() {
+            try {
+                new ServerProcess(Fake(), "--port 18777 --big-health").Start();
+                Assert.True(WaitFor(() => CanConnect(18777), 5000), "port open");
+                var h = new HealthClient(18777).Get(5000);   // the body says healthy, but it is far over 64 KB
+                Assert.Equal(HealthKind.Answered, h.Kind, "kind"); Assert.Equal(200, h.HttpStatus, "http");
             } finally { Sweep(); }
         }
         [Test] public static void Os_health_nothingListening_isUnreachable() {

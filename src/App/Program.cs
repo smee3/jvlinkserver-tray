@@ -14,8 +14,6 @@ namespace JVLinkServerTray
 {
     public static class Program
     {
-        const string IniName = "JVLinkServerTray.ini";
-
         // DPI awareness (per monitor) is declared in src\App\app.manifest, not set here.
         [STAThread]
         public static int Main(string[] args)
@@ -30,22 +28,12 @@ namespace JVLinkServerTray
             string arg = TrayText.ConfigArg(args);
             try
             {
-                if (arg == null)
-                {
-                    path = Path.Combine(exeDir, IniName);
-                    config = TrayConfig.LoadFile(path);           // a missing ini next to the EXE means the defaults
-                }
-                else
-                {
-                    path = arg.Length == 0 ? "(--config の値がありません)" : Path.GetFullPath(arg);
-                    // An ini named on the command line must exist: never fall back to the defaults (the real server).
-                    if (arg.Length == 0 || !File.Exists(path)) error = "設定ファイルが見つかりません（" + path + "）";
-                    else config = TrayConfig.LoadFile(path);
-                }
+                error = TrayConfig.Locate(arg, exeDir, out path);
+                if (error == null) config = TrayConfig.LoadFile(path);
             }
             catch (Exception e)
             {
-                path = arg ?? Path.Combine(exeDir, IniName);
+                path = arg ?? Path.Combine(exeDir, TrayConfig.IniName);
                 error = "設定ファイルを読めません（" + e.Message + "）";
                 config = null;
             }

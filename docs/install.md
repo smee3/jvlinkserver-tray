@@ -48,8 +48,10 @@ Register-ScheduledTask -TaskName 'JVLinkServerTray' -Action $action -Trigger $tr
 | `StartupGraceSeconds` | 60 | 起動直後に応答がなくても待つ時間（秒） |
 | `ShutdownTimeoutSeconds` | 20 | 終了時にサーバーが止まるのを待つ時間（秒） |
 
-- ini は UTF-8 で保存してください（いまのメモ帳の既定です）。
-- 別の ini で動かしたいときは `JVLinkServerTray.exe --config <ini のパス>` とします。`--config` で渡した ini が見つからないときは、既定値で動かさず、赤で止まります。
+- ini に書かなかった項目は、上の既定値になります。`--port` が 1〜65535 の外なら 8765 です。
+- ini は UTF-8（いまのメモ帳の既定）か、メモ帳の「ANSI」（Shift_JIS）で保存します。
+- 別の ini で動かしたいときは `JVLinkServerTray.exe --config <ini のパス>` とします。
+- ini が見つからないときは（EXE の隣の `JVLinkServerTray.ini` でも、`--config` で渡したものでも）、既定値で動かさず、赤で止まります。ini を置いたら、メニューの「終了…」で終わらせて、もう一度起動します。
 
 ## 更新のしかた
 

@@ -60,10 +60,37 @@ namespace JVLinkServerTray
             return int.TryParse(s, out n) && n >= 1;
         }
 
+        public const string IniName = "JVLinkServerTray.ini";
+
+        // The ini to read: the one --config names, else JVLinkServerTray.ini next to the EXE. Either way it must
+        // exist: the tray never runs on the defaults, since they point at the real server (port 8765).
+        // Returns null when the ini is there (path is then its full path), else the reason to show.
+        public static string Locate(string configArg, string exeDir, out string path)
+        {
+            if (configArg == null)
+            {
+                path = Path.Combine(exeDir, IniName);
+                return File.Exists(path) ? null : "設定ファイル " + IniName + " がありません";
+            }
+            path = configArg.Length == 0 ? "(--config の値がありません)" : Path.GetFullPath(configArg);
+            return configArg.Length > 0 && File.Exists(path) ? null : "設定ファイルが見つかりません（" + path + "）";
+        }
+
+        // UTF-8 (with or without BOM); a file that is not valid UTF-8 is read as Shift_JIS (Notepad's "ANSI").
         public static TrayConfig LoadFile(string path)
         {
             if (!File.Exists(path)) return new TrayConfig();
-            return Parse(File.ReadAllText(path, new UTF8Encoding(false)));
+            byte[] bytes = File.ReadAllBytes(path);
+            string text;
+            try
+            {
+                text = new UTF8Encoding(false, true).GetString(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                text = Encoding.GetEncoding(932).GetString(bytes);
+            }
+            return Parse(text);
         }
     }
 }

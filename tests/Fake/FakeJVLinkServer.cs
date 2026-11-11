@@ -10,7 +10,8 @@ using System.Threading;
 // A stand-in for JVLinkServer.exe, used only by the tests.
 // Supervisor mode (--port <n>): starts itself again as "--mode worker --port 0" without a window,
 // then answers GET /health and POST /shutdown on 127.0.0.1:<n>.
-// Options: --answer healthy|503, --hang-health, --no-listen, --ignore-shutdown. Unknown arguments are ignored.
+// Options: --answer healthy|503, --hang-health, --big-health (a healthy body of about 100 KB), --no-listen,
+// --ignore-shutdown. Unknown arguments are ignored.
 namespace JVLinkServerTray.Fake
 {
     public static class FakeJVLinkServer
@@ -19,7 +20,7 @@ namespace JVLinkServerTray.Fake
         const string StartingBody = "{\"status\":\"starting\",\"components\":{\"worker_process\":{\"restart_count\":0,\"last_restart_reason\":null}}}";
 
         static string _answer = "healthy";
-        static bool _hangHealth, _ignoreShutdown;
+        static bool _hangHealth, _bigHealth, _ignoreShutdown;
         static Process _worker;
         static readonly object Gate = new object();
 
@@ -49,6 +50,7 @@ namespace JVLinkServerTray.Fake
                 else if (a == "--mode" && next != null) { worker = next == "worker"; i++; }
                 else if (a == "--answer" && next != null) { _answer = next; i++; }
                 else if (a == "--hang-health") _hangHealth = true;
+                else if (a == "--big-health") _bigHealth = true;
                 else if (a == "--no-listen") noListen = true;
                 else if (a == "--ignore-shutdown") _ignoreShutdown = true;
             }
@@ -125,7 +127,8 @@ namespace JVLinkServerTray.Fake
                         Thread.Sleep(Timeout.Infinite);   // accepted, never answered
                         return;
                     }
-                    if (_answer == "503") Respond(s, 503, "Service Unavailable", StartingBody);
+                    if (_bigHealth) Respond(s, 200, "OK", "{\"status\":\"healthy\",\"pad\":\"" + new string('x', 100000) + "\"}");
+                    else if (_answer == "503") Respond(s, 503, "Service Unavailable", StartingBody);
                     else Respond(s, 200, "OK", HealthyBody);
                 }
                 else if (method == "POST" && path == "/shutdown")

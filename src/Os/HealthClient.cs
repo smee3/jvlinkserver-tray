@@ -11,6 +11,8 @@ namespace JVLinkServerTray
     {
         // A hard bound on top of HttpWebRequest.Timeout: the request is aborted this long after timeoutMs.
         const int AbortSlackMs = 500;
+        // /health answers are a few hundred bytes.
+        const int MaxBodyChars = 64 * 1024;
 
         readonly int _port;
 
@@ -119,6 +121,7 @@ namespace JVLinkServerTray
         }
 
         // The status line already arrived, so a body that cannot be read still counts as an answer.
+        // So does a body over MaxBodyChars: it is not read on, and an empty body is never healthy.
         static string ReadBody(HttpWebResponse resp)
         {
             try
@@ -126,7 +129,10 @@ namespace JVLinkServerTray
                 using (Stream s = resp.GetResponseStream())
                 using (var r = new StreamReader(s, Encoding.UTF8))
                 {
-                    return r.ReadToEnd();
+                    var buf = new char[MaxBodyChars + 1];
+                    int n = 0, got;
+                    while (n < buf.Length && (got = r.Read(buf, n, buf.Length - n)) > 0) n += got;
+                    return n > MaxBodyChars ? "" : new string(buf, 0, n);
                 }
             }
             catch (Exception)
